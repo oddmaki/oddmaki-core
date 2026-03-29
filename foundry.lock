@@ -1,0 +1,32 @@
+{
+  "lib/conditional-tokens-contracts": {
+    "rev": "eeefca66eb46c800a9aaab88db2064a99026fde5"
+  },
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.10.0",
+      "rev": "8bbcf6e3f8f62f419e5429a0bd89331c85c37824"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v4.9.3",
+      "rev": "fd81a96f01cc42ef1c9a5399364968d0e07e9e90"
+    }
+  },
+  "lib/openzeppelin-solidity": {
+    "branch": {
+      "name": "v2.3.0",
+      "rev": "132e442c1f5c857d2929fc2d5c5f08a3274a1910"
+    }
+  },
+  "lib/protocol": {
+    "rev": "9bfbbe98bed0ac7d9c924115018bb0e26987e2b5"
+  },
+  "lib/pyth-sdk-solidity": {
+    "tag": {
+      "name": "v2.2.0",
+      "rev": "11d6bcfc2e56885535a9a8e3c8417847cb20be14"
+    }
+  }
+}

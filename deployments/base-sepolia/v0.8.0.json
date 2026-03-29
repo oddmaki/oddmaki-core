@@ -1,0 +1,32 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "version": "0.8.0",
+  "timestamp": "2026-03-11T22:17:28.116Z",
+  "contracts": {
+    "DiamondCutFacet": "0x73b3b13059487b71cf3b939b2df5f7fe503ed3ce",
+    "DiamondLoupeFacet": "0x184133e5b0a1dfd89da6a08a6ab3cb3077bcbb8c",
+    "OwnershipFacet": "0xdf8389475f62e998affde6814b90a62130a502d9",
+    "VaultFacet": "0x9f5d1408d6f40fc9a9532924a195ebf1535083f1",
+    "MarketsFacet": "0x91cc9edf624b64adce8845c5f4f0858879840773",
+    "LimitOrdersFacet": "0x5cf092d83ed2cbd313e823ba8ebe811c9acdd519",
+    "NegRiskFacet": "0x26fab3188ab0c9e05df3777738217bf9f88d0191",
+    "MatchingFacet": "0x875a465e013b7c5c21af15492212bc72a7a58999",
+    "VenueFacet": "0x4f061f8c2ecb696204124e2a1b0b10d33342a631",
+    "OrderBookFacet": "0xf2dcdf9c3b30bb8ebdd88a78691bb8f28618b554",
+    "ProtocolFacet": "0x488e3350c78c2baeeebc3c98b19b5f08160a5c88",
+    "MarketGroupFacet": "0x4326505db29083651f92fca430dcc865c9fd7e8d",
+    "MarketOrdersFacet": "0x02ed6b1195fd1a7458e743221b95301de85f71a0",
+    "ResolutionFacet": "0x69eecf9fc223e2e522f9f423c73025c03c84ddbf",
+    "OddMaki": "0x848b5197eaf53116f4ff6b9e7f807ba7ac578c6f",
+    "USDC": "0x31777c7c14bf0b2775e82ec355cdce4ae1ec92c5",
+    "ConditionalTokens": "0x7364747372Ac4a175B5326f5B2C9CB1C271d32e8",
+    "UmaOracle": "0x45375b8e995fa2811ec184e3b6a3158a770a01e8"
+  },
+  "links": {
+    "usdcFaucet": "https://faucet.circle.com/",
+    "ethFaucet": "https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet",
+    "explorer": "https://sepolia.basescan.org"
+  },
+  "notes": "audit fixes"
+}

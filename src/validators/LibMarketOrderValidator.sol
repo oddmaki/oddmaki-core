@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
+
+/**
+ * @title LibMarketOrderValidator
+ * @notice Market order validation logic and errors. Only reads storage — no mutations.
+ *         Used by the MarketOrdersFacet and LibMarketOrderService to enforce invariants.
+ */
+library LibMarketOrderValidator {
+    // ---- Constants ----
+    uint256 constant MAX_ITERATIONS = 50;
+    uint256 constant MAX_EXPIRY_RETRIES = 10;
+
+    // ---- Errors: market state ----
+    error MarketNotActive();
+
+    // ---- Errors: input validation ----
+    error ZeroCollateralAmount();
+    error InvalidMaxPrice();
+    error InvalidOutcome();
+
+    // ---- Errors: execution ----
+    error InsufficientLiquidityForFOK();
+    error NoLiquidityAvailable();
+
+    // ---- Precondition checks ----
+
+    /// @notice Market must be active for trading.
+    function requireActiveMarket(uint256 marketId) internal view {
+        if (!LibMarketTradingStorage.marketIsActive(marketId)) revert MarketNotActive();
+    }
+
+    /// @notice Validate market order input parameters.
+    function validateMarketOrderParams(
+        uint256 collateralAmount,
+        uint256 maxPriceTick,
+        uint256 outcomeId
+    ) internal pure {
+        if (collateralAmount == 0) revert ZeroCollateralAmount();
+        if (maxPriceTick == 0) revert InvalidMaxPrice();
+        if (outcomeId > 1) revert InvalidOutcome();
+    }
+}
