@@ -16,6 +16,8 @@ forge test --mc Contract # Run all tests in a specific contract
 forge test -vvvv         # Max verbosity (includes traces)
 ```
 
+**DO NOT run `forge fmt`.** The project requires `via_ir = true` (MarketsFacet has stack-too-deep without it), and `forge fmt` causes the Yul IR optimizer to produce pathological bytecode that OOGs at runtime. All tests fail after formatting.
+
 Deployment (local Anvil):
 ```bash
 forge script script/DeployOddMaki.s.sol --fork-url http://localhost:8545 --broadcast
