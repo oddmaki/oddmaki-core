@@ -19,3 +19,4 @@ node_modules/
 !/broadcast              # Allow broadcast folder
 /broadcast/*/31337/     # But ignore local Anvil deployments (chainId 31337)
 /broadcast/**/dry-run/  # And ignore dry-run simulations
+.claude/settings.json
