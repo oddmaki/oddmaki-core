@@ -1,5 +1,16 @@
 #!/usr/bin/env node
 
+// Saves a deployment snapshot from Forge broadcast data into deployments/<network>/<version>.json
+// and updates deployments/<network>/latest.json as a quick reference.
+//
+// Usage:
+//   node script/save-deployment.js <network> <version> [notes]
+//
+// Examples:
+//   node script/save-deployment.js base-sepolia v1.0.0
+//   node script/save-deployment.js base-sepolia v1.1.0 "Added market orders"
+//   node script/save-deployment.js localhost v0.1.0
+
 const fs = require('fs');
 const path = require('path');
 
@@ -211,8 +222,15 @@ function saveDeployment(network, version, deploymentData) {
     console.warn('Overwriting...');
   }
 
-  fs.writeFileSync(deploymentPath, JSON.stringify(deploymentData, null, 2) + '\n');
+  const jsonContent = JSON.stringify(deploymentData, null, 2) + '\n';
+  fs.writeFileSync(deploymentPath, jsonContent);
+
+  // Also write/update latest.json as a quick reference
+  const latestPath = path.join(deploymentDir, 'latest.json');
+  fs.writeFileSync(latestPath, jsonContent);
+
   console.log(`✅ Deployment saved to ${deploymentPath}`);
+  console.log(`✅ Latest reference updated at ${latestPath}`);
   console.log(`\nContracts deployed:`);
   for (const [name, address] of Object.entries(deploymentData.contracts)) {
     console.log(`  ${name.padEnd(20)} ${address}`);

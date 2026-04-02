@@ -404,8 +404,9 @@ contract DeployOddMakiScript is Script {
         cuts[11] = _cut(address(marketGroupFacet), marketGroupSelectors);
 
         // 12: MarketOrdersFacet
-        bytes4[] memory marketOrdersSelectors = new bytes4[](1);
+        bytes4[] memory marketOrdersSelectors = new bytes4[](2);
         marketOrdersSelectors[0] = MarketOrdersFacet.placeMarketOrder.selector;
+        marketOrdersSelectors[1] = MarketOrdersFacet.placeMarketSell.selector;
         cuts[12] = _cut(address(marketOrdersFacet), marketOrdersSelectors);
 
         // 13: ResolutionFacet

@@ -210,6 +210,13 @@ struct MarketBuyResult {
     uint256 unusedCollateral; // Returned to buyer (FAK only)
 }
 
+struct MarketSellResult {
+    uint256 tokensSold;         // Outcome tokens actually sold
+    uint256 avgPrice;           // Average execution price (1e18-scaled, gross before fees)
+    uint256 collateralReceived; // Net collateral received by seller (after fees)
+    uint256 unsoldTokens;       // Returned to seller (FAK only)
+}
+
 // -----------------------------------------------------------------------------
 // Matching Preview (read-only matchability check)
 // -----------------------------------------------------------------------------
