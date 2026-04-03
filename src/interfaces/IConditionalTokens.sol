@@ -75,4 +75,35 @@ interface IConditionalTokens {
     /// @notice Report payout vector for a resolved condition. Only callable by the oracle
     ///         registered via prepareCondition.
     function reportPayouts(bytes32 questionId, uint256[] calldata payouts) external;
+
+    // -------------------------------------------------------------------------
+    // Resolution queries (used by SDK, not by Diamond on-chain)
+    // -------------------------------------------------------------------------
+
+    /// @notice Sum of payout numerators for a condition (non-zero once resolved).
+    function payoutDenominator(bytes32 conditionId) external view returns (uint256);
+
+    /// @notice Payout numerator for a specific outcome slot of a resolved condition.
+    function payoutNumerators(bytes32 conditionId, uint256 index) external view returns (uint256);
+
+    /// @notice Redeem resolved outcome tokens for collateral.
+    function redeemPositions(
+        IERC20 collateralToken,
+        bytes32 parentCollectionId,
+        bytes32 conditionId,
+        uint256[] calldata indexSets
+    ) external;
+
+    // -------------------------------------------------------------------------
+    // Position queries (used by SDK, not by Diamond on-chain)
+    // -------------------------------------------------------------------------
+
+    /// @notice Compute positionId = keccak256(abi.encodePacked(collateralToken, collectionId)).
+    function getPositionId(IERC20 collateralToken, bytes32 collectionId)
+        external
+        pure
+        returns (uint256 positionId);
+
+    /// @notice ERC-1155 balance query for outcome token positions.
+    function balanceOf(address account, uint256 id) external view returns (uint256);
 }
