@@ -14,14 +14,14 @@ interface IConditionalTokens {
     function getConditionId(address oracle, bytes32 questionId, uint256 outcomeSlotCount)
         external
         pure
-        returns (bytes32);
+        returns (bytes32 conditionId);
 
     /// @notice Registers `oracle` as the entity authorised to report payouts for this question.
     ///         Must be called before the market can be used for split/merge.
     function prepareCondition(address oracle, bytes32 questionId, uint256 outcomeSlotCount) external;
 
     /// @notice Returns the number of outcome slots for a condition (0 if not yet prepared).
-    function getOutcomeSlotCount(bytes32 conditionId) external view returns (uint256);
+    function getOutcomeSlotCount(bytes32 conditionId) external view returns (uint256 outcomeSlotCount);
 
     // -------------------------------------------------------------------------
     // Position IDs
@@ -34,7 +34,7 @@ interface IConditionalTokens {
     function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet)
         external
         view
-        returns (bytes32);
+        returns (bytes32 collectionId);
 
     // -------------------------------------------------------------------------
     // Split / merge
