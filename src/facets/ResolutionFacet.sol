@@ -52,11 +52,15 @@ contract ResolutionFacet is ReentrancyGuard, OptimisticOracleV3CallbackRecipient
         address umaOracle = LibProtocolStorage.getUmaOracle();
         bytes32 identifier = LibProtocolStorage.getUmaIdentifier();
 
+        // Enforce UMA minimum bond — use whichever is greater
+        uint256 minimumBond = OptimisticOracleV3Interface(umaOracle).getMinimumBond(address(oracle.currency));
+        uint256 effectiveBond = oracle.requiredBond > minimumBond ? oracle.requiredBond : minimumBond;
+
         // Pull bond from asserter to Diamond
-        TransferHelper._transferFromErc20(address(oracle.currency), msg.sender, address(this), oracle.requiredBond);
+        TransferHelper._transferFromErc20(address(oracle.currency), msg.sender, address(this), effectiveBond);
 
         // Approve UMA oracle to spend the bond
-        ApprovalHelper.approveErc20IfNeeded(address(oracle.currency), umaOracle, oracle.requiredBond);
+        ApprovalHelper.approveErc20IfNeeded(address(oracle.currency), umaOracle, effectiveBond);
 
         // Build UMA claim
         bytes memory claim = LibResolutionService.buildClaim(outcome, oracle.ancillaryData);
@@ -69,13 +73,13 @@ contract ResolutionFacet is ReentrancyGuard, OptimisticOracleV3CallbackRecipient
             address(0),
             oracle.liveness,
             oracle.currency,
-            oracle.requiredBond,
+            effectiveBond,
             identifier,
             bytes32(0)
         );
 
-        // Store assertion and lock question
-        LibResolutionService.createAssertionAndLock(assertionId, questionId, outcome);
+        // Store assertion (with asserter) and lock question
+        LibResolutionService.createAssertionAndLock(assertionId, questionId, outcome, msg.sender);
 
         emit AssertionCreated(assertionId, questionId, outcome, msg.sender);
     }

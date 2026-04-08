@@ -34,7 +34,7 @@ contract VenueFacetTest is Test, DiamondSetup {
     function _createDefaultVenue() internal returns (uint256) {
         vm.prank(OPERATOR);
         return VenueFacet(address(diamond))
-            .createVenue("My Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 0);
+            .createVenue("My Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 1e6);
     }
 
     // =========================================================================
@@ -50,7 +50,7 @@ contract VenueFacetTest is Test, DiamondSetup {
         _createDefaultVenue();
         vm.prank(OPERATOR);
         uint256 id2 = VenueFacet(address(diamond))
-            .createVenue("Venue 2", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 0);
+            .createVenue("Venue 2", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 1e6);
         assertEq(id2, 2);
     }
 
@@ -83,7 +83,7 @@ contract VenueFacetTest is Test, DiamondSetup {
         emit VenueCreated(1, OPERATOR, "My Venue", "");
         vm.prank(OPERATOR);
         VenueFacet(address(diamond))
-            .createVenue("My Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 0);
+            .createVenue("My Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 1e6);
     }
 
     // =========================================================================
@@ -93,52 +93,52 @@ contract VenueFacetTest is Test, DiamondSetup {
     function test_createVenue_revertsOnEmptyName() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidVenueName.selector);
-        VenueFacet(address(diamond)).createVenue("", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 0);
+        VenueFacet(address(diamond)).createVenue("", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revertsOnVenueFeeTooLow() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidVenueFee.selector);
-        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 0, 0, 1e16, 5e6, 0, 0);
+        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 0, 0, 1e16, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revertsOnVenueFeeTooHigh() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidVenueFee.selector);
         VenueFacet(address(diamond))
-            .createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 201, 0, 1e16, 5e6, 0, 0);
+            .createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 201, 0, 1e16, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revertsOnCreatorFeeExceedsVenueFee() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidCreatorFee.selector);
         VenueFacet(address(diamond))
-            .createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 100, 101, 1e16, 5e6, 0, 0);
+            .createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 100, 101, 1e16, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revertsOnZeroFeeRecipient() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidFeeRecipient.selector);
-        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), address(0), 100, 0, 1e16, 5e6, 0, 0);
+        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), address(0), 100, 0, 1e16, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revertsOnLowMarketCreationFee() public {
         vm.prank(OPERATOR);
         vm.expectRevert(LibVenueValidator.InvalidMarketCreationFee.selector);
-        VenueFacet(address(diamond))
-            .createVenue(
-                "V",
-                "",
-                address(0),
-                address(0),
-                FEE_RECIPIENT,
-                100,
-                0,
-                1e16,
-                4e6,
-                0,
-                0 // 4 USDC < 5 USDC min
-            );
+        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 4e6, 0, 1e6);
+    }
+
+    function test_createVenue_revertsOnZeroUmaMinBond() public {
+        vm.prank(OPERATOR);
+        vm.expectRevert(LibVenueValidator.InvalidUmaMinBond.selector);
+        VenueFacet(address(diamond)).createVenue("V", "", address(0), address(0), FEE_RECIPIENT, 100, 0, 1e16, 5e6, 0, 0);
+    }
+
+    function test_updateVenueOracleParams_revertsOnZeroUmaMinBond() public {
+        uint256 venueId = _createDefaultVenue();
+        vm.prank(OPERATOR);
+        vm.expectRevert(LibVenueValidator.InvalidUmaMinBond.selector);
+        VenueFacet(address(diamond)).updateVenueOracleParams(venueId, 1e18, 0);
     }
 
     // =========================================================================

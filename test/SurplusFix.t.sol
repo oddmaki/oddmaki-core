@@ -103,7 +103,7 @@ contract SurplusFixTest is Test, DiamondSetup {
             TICK_SIZE,
             5e6, // marketCreationFee
             0,
-            0
+            1e6
         );
 
         // Create market
@@ -306,7 +306,7 @@ contract SurplusFixTest is Test, DiamondSetup {
         // NOTE: no setProtocolTreasury call — fees disabled
 
         uint256 vid = VenueFacet(address(d2)).createVenue(
-            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 0
+            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         string[] memory outcomes = new string[](2);
@@ -349,7 +349,7 @@ contract SurplusFixTest is Test, DiamondSetup {
         // NOTE: no setProtocolTreasury call
 
         uint256 vid = VenueFacet(address(d2)).createVenue(
-            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 0
+            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         string[] memory outcomes = new string[](2);

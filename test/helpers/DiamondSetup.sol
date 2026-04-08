@@ -279,7 +279,7 @@ contract DiamondSetup is Test {
                 1e16, // defaultTickSize (1%)
                 5e6, // marketCreationFee (5 USDC minimum)
                 0, // umaRewardAmount
-                0 // umaMinBond
+                1e6 // umaMinBond (1 USDC)
             );
     }
 }

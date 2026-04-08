@@ -12,7 +12,8 @@ import {LibMarketGroupStorage} from "../storage/LibMarketGroupStorage.sol";
 import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
 import {LibVaultStorage} from "../storage/LibVaultStorage.sol";
 import {IConditionalTokens} from "../interfaces/IConditionalTokens.sol";
-import {AssertionData, MarketRegistryData, MarketGroupData, MarketStatus} from "../interfaces/Types.sol";
+import {TransferHelper} from "../libraries/TransferHelper.sol";
+import {AssertionData, MarketRegistryData, MarketOracleData, MarketGroupData, MarketStatus} from "../interfaces/Types.sol";
 
 /**
  * @title LibResolutionService
@@ -23,6 +24,7 @@ library LibResolutionService {
     // ---- Events emitted from the service layer so every resolution path is covered ----
     event MarketResolved(uint256 indexed marketId, bytes32 indexed questionId, string outcome);
     event MarketGroupResolved(uint256 indexed groupId, uint256 indexed winningMarketId);
+    event RewardPaid(bytes32 indexed assertionId, address indexed asserter, uint256 reward);
 
     // ---- Pure / View helpers ----
 
@@ -79,19 +81,35 @@ library LibResolutionService {
     function createAssertionAndLock(
         bytes32 assertionId,
         bytes32 questionId,
-        string calldata outcome
+        string calldata outcome,
+        address asserter
     ) internal {
-        LibResolutionAggregate.storeAssertion(assertionId, questionId, outcome);
+        LibResolutionAggregate.storeAssertion(assertionId, questionId, outcome, asserter);
         LibMarketOracleAggregate.setActiveAssertionId(questionId, assertionId);
     }
 
-    /// @notice Handle UMA resolved callback: mark settled, reset oracle if not truthful.
+    /// @notice Handle UMA resolved callback: mark settled, pay standalone reward or reset oracle.
     function handleAssertionResolved(bytes32 assertionId, bool assertedTruthfully) internal {
         AssertionData storage assertion = LibResolutionStorage.getAssertionData(assertionId);
         LibResolutionAggregate.markSettled(assertionId);
 
-        if (!assertedTruthfully) {
+        if (assertedTruthfully) {
+            payStandaloneReward(assertion);
+        } else {
             LibMarketOracleAggregate.setActiveAssertionId(assertion.questionId, bytes32(0));
+        }
+    }
+
+    /// @notice Pay reward to asserter for standalone markets (grouped market reward = 0 here; paid in cascadeGroupResolution).
+    function payStandaloneReward(AssertionData storage assertion) internal {
+        if (assertion.asserter == address(0)) return;
+
+        MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(assertion.questionId);
+        uint256 rewardAmount = oracle.reward;
+
+        if (rewardAmount > 0) {
+            TransferHelper._transferErc20(address(oracle.currency), assertion.asserter, rewardAmount);
+            emit RewardPaid(assertion.assertionId, assertion.asserter, rewardAmount);
         }
     }
 
@@ -109,10 +127,13 @@ library LibResolutionService {
         emit MarketResolved(marketId, questionId, outcome);
     }
 
-    /// @notice Cascade resolution for a market group: resolve all Active sibling markets as NO.
+    /// @notice Cascade resolution for a market group: pay group reward, resolve all Active sibling markets as NO.
     function cascadeGroupResolution(uint256 winningMarketId, uint256 groupId) internal {
         MarketGroupData storage group = LibMarketGroupStorage.getMarketGroupData(groupId);
         address ctf = LibVaultStorage.getCtf();
+
+        // Pay group reward to the winning market's asserter
+        payGroupReward(winningMarketId, group);
 
         LibMarketGroupAggregate.setResolvedMarketId(groupId, winningMarketId);
         LibMarketGroupAggregate.setGroupStatus(groupId, MarketStatus.Resolved);
@@ -140,5 +161,19 @@ library LibResolutionService {
         }
 
         emit MarketGroupResolved(groupId, winningMarketId);
+    }
+
+    /// @notice Pay the group-level reward to the winning market's asserter.
+    function payGroupReward(uint256 winningMarketId, MarketGroupData storage group) internal {
+        if (group.reward == 0) return;
+
+        bytes32 winningQuestionId = LibMarketRegistryStorage.getMarketRegistryData(winningMarketId).questionId;
+        bytes32 activeAssertionId = LibMarketOracleStorage.getMarketOracleData(winningQuestionId).activeAssertionId;
+        AssertionData storage winningAssertion = LibResolutionStorage.getAssertionData(activeAssertionId);
+
+        if (winningAssertion.asserter != address(0)) {
+            TransferHelper._transferErc20(address(group.collateralToken), winningAssertion.asserter, group.reward);
+            emit RewardPaid(activeAssertionId, winningAssertion.asserter, group.reward);
+        }
     }
 }

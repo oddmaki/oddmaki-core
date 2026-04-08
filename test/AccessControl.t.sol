@@ -357,7 +357,7 @@ contract AccessControlTest is Test, DiamondSetup {
     function _createPublicVenueWithOperator(address operator) internal returns (uint256 venueId, uint256 marketId) {
         vm.prank(operator);
         venueId = VenueFacet(address(diamond)).createVenue(
-            "Test Venue", "", address(0), address(0), operator, 100, 0, TICK_SIZE, 5e6, 0, 0
+            "Test Venue", "", address(0), address(0), operator, 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
         marketId = _createMarketInVenue(venueId);
     }
@@ -365,7 +365,7 @@ contract AccessControlTest is Test, DiamondSetup {
     function _createVenueWithAC(address operator, address tradingAC, address creationAC) internal returns (uint256 venueId) {
         vm.prank(operator);
         venueId = VenueFacet(address(diamond)).createVenue(
-            "AC Venue", "", tradingAC, creationAC, operator, 100, 0, TICK_SIZE, 5e6, 0, 0
+            "AC Venue", "", tradingAC, creationAC, operator, 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
     }
 

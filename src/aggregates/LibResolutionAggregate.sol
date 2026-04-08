@@ -15,13 +15,15 @@ library LibResolutionAggregate {
     function storeAssertion(
         bytes32 assertionId,
         bytes32 questionId,
-        string calldata outcome
+        string calldata outcome,
+        address asserter
     ) internal {
         LibResolutionStorage.getStorage().byAssertionId[assertionId] = AssertionData({
             assertionId: assertionId,
             questionId: questionId,
             outcome: outcome,
-            settled: false
+            settled: false,
+            asserter: asserter
         });
     }
 

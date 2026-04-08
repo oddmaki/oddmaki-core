@@ -13,6 +13,8 @@ import {LibMarketCreationFeeService} from "../services/LibMarketCreationFeeServi
 import {LibTickSizeValidator} from "../validators/LibTickSizeValidator.sol";
 import {LibMarketRegistryAggregate} from "../aggregates/LibMarketRegistryAggregate.sol";
 import {LibMarketTradingAggregate} from "../aggregates/LibMarketTradingAggregate.sol";
+import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
+import {TransferHelper} from "../libraries/TransferHelper.sol";
 import {MarketGroupData, MarketGroupItem, MarketStatus} from "../interfaces/Types.sol";
 
 /**
@@ -60,8 +62,14 @@ contract MarketGroupFacet is ReentrancyGuard {
         LibTickSizeValidator.requireValidTickSize(tickSize);
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
 
+        // Collect UMA reward from creator — held by Diamond until group resolution.
+        uint256 reward = LibVenueStorage.getVenueData(venueId).umaRewardAmount + additionalReward;
+        if (reward > 0) {
+            TransferHelper._transferFromErc20(collateralToken, msg.sender, address(this), reward);
+        }
+
         groupId = LibMarketGroupAggregate.createGroup(
-            msg.sender, venueId, question, description, collateralToken, tickSize, additionalReward, liveness
+            msg.sender, venueId, question, description, collateralToken, tickSize, additionalReward, liveness, reward
         );
 
         emit MarketGroupCreated(groupId, venueId, msg.sender, question, block.timestamp, tags);

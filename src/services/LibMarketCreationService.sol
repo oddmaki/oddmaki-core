@@ -94,7 +94,8 @@ library LibMarketCreationService {
             LibAncillaryData.generateQuestionId(address(this), block.chainid, venueId, marketId);
 
         // Step 5: Fetch oracle parameters from venue.
-        uint256 reward = LibVenueStorage.getVenueData(venueId).umaRewardAmount + additionalReward;
+        // Grouped markets have reward = 0 here; their reward is collected at group level.
+        uint256 reward = groupId > 0 ? 0 : LibVenueStorage.getVenueData(venueId).umaRewardAmount + additionalReward;
         uint256 requiredBond = LibVenueStorage.getVenueData(venueId).umaMinBond;
 
         // Step 6: Write Registry — all fields known; conditionId not in registry.

@@ -120,9 +120,9 @@ contract ResolutionTest is Test, DiamondSetup {
         vm.prank(ASSERTER);
         ResolutionFacet(address(diamond)).assertMarketOutcome(questionId, "Yes");
 
-        // Bond was pulled (requiredBond is 0 in default venue, so MockUmaOracle pulls 0 bond)
-        // The TransferHelper pulls requiredBond from asserter
-        assertEq(collateral.balanceOf(ASSERTER), balBefore);
+        // Bond was pulled (requiredBond = 1e6 from default venue, effective bond = max(1e6, minimumBond=0) = 1e6)
+        MarketOracleData memory oracle = MarketsFacet(address(diamond)).getMarketOracleData(marketId);
+        assertEq(collateral.balanceOf(ASSERTER), balBefore - oracle.requiredBond);
     }
 
     function test_assertMarketOutcome_emitsEvent() public {
@@ -435,5 +435,131 @@ contract ResolutionTest is Test, DiamondSetup {
         uint256[] memory payouts = ctf.getReportedPayouts(questionId);
         assertEq(payouts[0], 0);
         assertEq(payouts[1], 1); // No wins
+    }
+
+    // =========================================================================
+    // Minimum bond enforcement
+    // =========================================================================
+
+    function test_assertMarketOutcome_usesMinimumBondWhenHigher() public {
+        // Set UMA minimum bond higher than venue's requiredBond (1e6)
+        uint256 umaMinBond = 10e6;
+        umaOracle.setMinimumBond(umaMinBond);
+
+        collateral.mint(ASSERTER, 100e6);
+        vm.prank(ASSERTER);
+        collateral.approve(address(diamond), 100e6);
+
+        uint256 balBefore = collateral.balanceOf(ASSERTER);
+        vm.prank(ASSERTER);
+        ResolutionFacet(address(diamond)).assertMarketOutcome(questionId, "Yes");
+
+        // effectiveBond = max(1e6, 10e6) = 10e6
+        assertEq(collateral.balanceOf(ASSERTER), balBefore - umaMinBond);
+    }
+
+    // =========================================================================
+    // Asserter tracking
+    // =========================================================================
+
+    function test_assertMarketOutcome_storesAsserterAddress() public {
+        bytes32 assertionId = _assertOutcome("Yes");
+
+        AssertionData memory data = ResolutionFacet(address(diamond)).getAssertionData(assertionId);
+        assertEq(data.asserter, ASSERTER);
+    }
+
+    // =========================================================================
+    // Reward payout
+    // =========================================================================
+
+    function _createMarketWithReward(uint256 rewardAmount) internal returns (uint256 mId, bytes32 qId) {
+        // Create venue with non-zero reward
+        vm.prank(CREATOR);
+        uint256 vid = VenueFacet(address(diamond)).createVenue(
+            "Reward Venue", "", address(0), address(0), CREATOR, 100, 0, TICK_SIZE, 5e6, rewardAmount, 1e6
+        );
+
+        // Fund creator for creation fee + reward
+        collateral.mint(CREATOR, 100e6);
+        vm.prank(CREATOR);
+        collateral.approve(address(diamond), 100e6);
+
+        // Create market (reward collected from creator here)
+        string[] memory outcomes = new string[](2);
+        outcomes[0] = "Yes";
+        outcomes[1] = "No";
+        vm.prank(CREATOR);
+        mId = MarketsFacet(address(diamond)).createMarket(
+            vid, "", outcomes, TICK_SIZE, address(collateral), 0, 0, new bytes32[](0)
+        );
+
+        MarketRegistryData memory reg = MarketsFacet(address(diamond)).getMarketRegistryData(mId);
+        qId = reg.questionId;
+    }
+
+    function test_rewardPayout_truthfulResolution() public {
+        uint256 rewardAmount = 5e6;
+        (uint256 mId, bytes32 qId) = _createMarketWithReward(rewardAmount);
+
+        // Assert
+        _fundAndApproveAsserter(100e6);
+        vm.prank(ASSERTER);
+        bytes32 assertionId = ResolutionFacet(address(diamond)).assertMarketOutcome(qId, "Yes");
+
+        uint256 asserterBalBefore = collateral.balanceOf(ASSERTER);
+
+        // Settle truthfully (UMA callback fires)
+        ResolutionFacet(address(diamond)).settleAssertion(assertionId);
+
+        // Asserter received the reward
+        assertEq(collateral.balanceOf(ASSERTER), asserterBalBefore + rewardAmount);
+    }
+
+    function test_rewardPayout_rejectedAssertion_keepsRewardForNextAsserter() public {
+        uint256 rewardAmount = 5e6;
+        (uint256 mId, bytes32 qId) = _createMarketWithReward(rewardAmount);
+
+        // Assert (will be rejected)
+        _fundAndApproveAsserter(100e6);
+        vm.prank(ASSERTER);
+        bytes32 firstId = ResolutionFacet(address(diamond)).assertMarketOutcome(qId, "Yes");
+
+        uint256 diamondBal = collateral.balanceOf(address(diamond));
+
+        // UMA resolves NOT truthfully
+        umaOracle.setAssertionResult(firstId, false);
+        umaOracle.simulateResolvedCallback(firstId, false);
+
+        // Diamond still holds the reward (no payout on rejected assertion)
+        assertEq(collateral.balanceOf(address(diamond)), diamondBal);
+    }
+
+    function test_rewardPreFunding_collectedFromCreator() public {
+        uint256 rewardAmount = 5e6;
+
+        // Fund creator first, then snapshot balance
+        collateral.mint(CREATOR, 200e6);
+        vm.prank(CREATOR);
+        collateral.approve(address(diamond), 200e6);
+        uint256 creatorBalBefore = collateral.balanceOf(CREATOR);
+
+        // Create venue with reward
+        vm.prank(CREATOR);
+        uint256 vid = VenueFacet(address(diamond)).createVenue(
+            "Reward Venue", "", address(0), address(0), CREATOR, 100, 0, TICK_SIZE, 5e6, rewardAmount, 1e6
+        );
+
+        // Create market (reward + creation fee collected from creator)
+        string[] memory outcomes = new string[](2);
+        outcomes[0] = "Yes";
+        outcomes[1] = "No";
+        vm.prank(CREATOR);
+        MarketsFacet(address(diamond)).createMarket(
+            vid, "", outcomes, TICK_SIZE, address(collateral), 0, 0, new bytes32[](0)
+        );
+
+        // Creator's balance decreased by reward (creation fee is no-op without protocol treasury)
+        assertEq(creatorBalBefore - collateral.balanceOf(CREATOR), rewardAmount);
     }
 }

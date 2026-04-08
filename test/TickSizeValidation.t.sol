@@ -172,13 +172,13 @@ contract TickSizeValidationTest is Test, DiamondSetup {
     function test_createVenue_revert_invalidDefaultTickSize() public {
         vm.expectRevert(LibTickSizeValidator.InvalidTickSize.selector);
         VenueFacet(address(diamond))
-            .createVenue("Bad Venue", "", address(0), address(0), address(this), 100, 0, 1e17, 5e6, 0, 0);
+            .createVenue("Bad Venue", "", address(0), address(0), address(this), 100, 0, 1e17, 5e6, 0, 1e6);
     }
 
     function test_createVenue_revert_zeroDefaultTickSize() public {
         vm.expectRevert(LibTickSizeValidator.InvalidTickSize.selector);
         VenueFacet(address(diamond))
-            .createVenue("Bad Venue", "", address(0), address(0), address(this), 100, 0, 0, 5e6, 0, 0);
+            .createVenue("Bad Venue", "", address(0), address(0), address(this), 100, 0, 0, 5e6, 0, 1e6);
     }
 
     // ---- Helpers ----

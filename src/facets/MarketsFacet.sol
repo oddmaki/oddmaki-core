@@ -17,6 +17,8 @@ import {LibAncillaryData} from "../libraries/LibAncillaryData.sol";
 import {LibMarketOracleAggregate} from "../aggregates/LibMarketOracleAggregate.sol";
 import {LibMarketRegistryAggregate} from "../aggregates/LibMarketRegistryAggregate.sol";
 import {LibMarketTradingAggregate} from "../aggregates/LibMarketTradingAggregate.sol";
+import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
+import {TransferHelper} from "../libraries/TransferHelper.sol";
 import {MarketRegistryData, MarketOracleData, MarketTradingData, MarketGroupData, MarketStatus} from "../interfaces/Types.sol";
 
 /**
@@ -66,6 +68,12 @@ contract MarketsFacet is ReentrancyGuard {
 
         // Fee collection — stays in facet (needs msg.sender; reads fee amount from venue config).
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
+
+        // Collect UMA reward from creator — held by Diamond until resolution.
+        uint256 reward = LibVenueStorage.getVenueData(venueId).umaRewardAmount + additionalReward;
+        if (reward > 0) {
+            TransferHelper._transferFromErc20(collateralToken, msg.sender, address(this), reward);
+        }
 
         // All creation logic delegated to the shared service.
         // Standalone markets: groupId = 0, initialStatus = Active.

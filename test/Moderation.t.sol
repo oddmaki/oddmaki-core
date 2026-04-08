@@ -102,7 +102,7 @@ contract ModerationTest is Test, DiamondSetup {
         // Create venue with OPERATOR as operator
         vm.prank(OPERATOR);
         venueId = VenueFacet(address(diamond)).createVenue(
-            "Test Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 0
+            "Test Venue", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         // Create market (creation fee = 5 USDC)
@@ -630,7 +630,7 @@ contract ModerationTest is Test, DiamondSetup {
         // Create a second venue
         vm.prank(OPERATOR);
         uint256 venueId2 = VenueFacet(address(diamond)).createVenue(
-            "Venue 2", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 0
+            "Venue 2", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         // Suspend only venue 1

@@ -22,7 +22,8 @@ library LibMarketGroupAggregate {
         address collateralToken,
         uint256 tickSize,
         uint256 additionalReward,
-        uint64 liveness
+        uint64 liveness,
+        uint256 reward
     ) internal returns (uint256 groupId) {
         groupId = LibMarketGroupStorage.allocateGroupId();
 
@@ -41,7 +42,8 @@ library LibMarketGroupAggregate {
             collateralToken: IERC20(collateralToken),
             tickSize: tickSize,
             additionalReward: additionalReward,
-            liveness: liveness
+            liveness: liveness,
+            reward: reward
         });
     }
 

@@ -186,6 +186,7 @@ struct MarketGroupData {
     uint256 tickSize;
     uint256 additionalReward;
     uint64 liveness;
+    uint256 reward;            // Total UMA reward (venue base + additionalReward), collected at group creation
 }
 
 /// @notice Per-market item data for grouped markets. Keyed by marketId.
@@ -247,6 +248,7 @@ struct AssertionData {
     bytes32 questionId;
     string outcome;
     bool settled;
+    address asserter;
 }
 
 // -----------------------------------------------------------------------------

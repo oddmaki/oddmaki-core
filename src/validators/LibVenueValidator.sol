@@ -26,6 +26,7 @@ library LibVenueValidator {
     error InvalidCreatorFee();
     error InvalidFeeRecipient();
     error InvalidMarketCreationFee();
+    error InvalidUmaMinBond();
 
     // ---- Existence / ownership checks ----
 
@@ -83,5 +84,9 @@ library LibVenueValidator {
     function validateFeeParams(uint256 venueFeeBps, uint256 creatorFeeBps) internal pure {
         if (venueFeeBps < 1 || venueFeeBps > 200) revert InvalidVenueFee();
         if (creatorFeeBps > venueFeeBps) revert InvalidCreatorFee();
+    }
+
+    function validateOracleParams(uint256 umaMinBond) internal pure {
+        if (umaMinBond == 0) revert InvalidUmaMinBond();
     }
 }

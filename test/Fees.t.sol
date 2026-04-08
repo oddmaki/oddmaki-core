@@ -99,7 +99,7 @@ contract FeesTest is Test, DiamondSetup {
             TICK_SIZE,
             5e6, // marketCreationFee
             0,
-            0
+            1e6
         );
 
         // Create market (creator = MARKET_CREATOR)
@@ -472,7 +472,7 @@ contract FeesTest is Test, DiamondSetup {
         // NOTE: no setProtocolTreasury call
 
         uint256 vid = VenueFacet(address(d2)).createVenue(
-            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 0
+            "No Fee Venue", "", address(0), address(0), address(this), 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         string[] memory outcomes = new string[](2);
@@ -543,7 +543,7 @@ contract FeesTest is Test, DiamondSetup {
     function test_fees_creatorFeeZero_allGoesToVenue() public {
         // Create a venue with 0 creator fee
         uint256 vid2 = VenueFacet(address(diamond)).createVenue(
-            "Zero Creator", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 0
+            "Zero Creator", "", address(0), address(0), FEE_RECIPIENT, 100, 0, TICK_SIZE, 5e6, 0, 1e6
         );
 
         // Provide creation fee collateral

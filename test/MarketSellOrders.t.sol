@@ -103,7 +103,7 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         vm.prank(MARKET_CREATOR);
         venueId = VenueFacet(address(diamond)).createVenue(
             "MS Test Venue", "", address(0), address(0), FEE_RECIPIENT,
-            VENUE_FEE_BPS, CREATOR_FEE_BPS, TICK_SIZE, 5e6, 0, 0
+            VENUE_FEE_BPS, CREATOR_FEE_BPS, TICK_SIZE, 5e6, 0, 1e6
         );
 
         uint256 creationFee = 5e6;

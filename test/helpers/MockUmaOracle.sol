@@ -11,6 +11,7 @@ import {OptimisticOracleV3CallbackRecipientInterface} from "../../src/interfaces
  */
 contract MockUmaOracle {
     uint256 private _nextAssertionId = 1;
+    uint256 private _minimumBond;
 
     struct MockAssertion {
         bytes32 assertionId;
@@ -61,8 +62,13 @@ contract MockUmaOracle {
         return mockAssertions[assertionId].result;
     }
 
-    function getMinimumBond(address) external pure returns (uint256) {
-        return 0;
+    function getMinimumBond(address) external view returns (uint256) {
+        return _minimumBond;
+    }
+
+    /// @notice Set the minimum bond for testing.
+    function setMinimumBond(uint256 bond) external {
+        _minimumBond = bond;
     }
 
     // ---- Test helpers ----
