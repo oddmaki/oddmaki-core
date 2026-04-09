@@ -43,9 +43,9 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
     // Fee config: 100 bps venue, 30 bps creator
     uint256 constant VENUE_FEE_BPS = 100;
     uint256 constant CREATOR_FEE_BPS = 30;
-    uint256 constant PROTOCOL_FEE_BPS = 20;
+    uint256 constant PROTOCOL_FEE_BPS = 50;
     uint256 constant OPERATOR_FEE_BPS = 10;
-    uint256 constant TOTAL_FEE_BPS = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 130
+    uint256 constant TOTAL_FEE_BPS = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 160
     uint256 constant BPS_DENOMINATOR = 10_000;
 
     // =========================================================================
@@ -99,6 +99,7 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         VaultFacet(address(diamond)).setCtf(address(ctf));
         ProtocolFacet(address(diamond)).setCollateralWhitelisted(address(collateral), true);
         ProtocolFacet(address(diamond)).setProtocolTreasury(TREASURY);
+        ProtocolFacet(address(diamond)).setProtocolFeeBps(PROTOCOL_FEE_BPS);
 
         vm.prank(MARKET_CREATOR);
         venueId = VenueFacet(address(diamond)).createVenue(

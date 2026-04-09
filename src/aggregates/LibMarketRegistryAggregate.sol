@@ -40,18 +40,20 @@ library LibMarketRegistryAggregate {
             oracle: oracle,
             tickSize: tickSize,
             venueFeeBps: 0,
-            creatorFeeBps: 0
+            creatorFeeBps: 0,
+            protocolFeeBps: 0
         });
         s.byMarketId[marketId] = data;
         s.marketIdByQuestionId[questionId] = marketId;
         return data;
     }
 
-    /// @notice Snapshot venue fee BPS onto market registry (H-2 fix: immutable per market).
-    function setFeeSnapshot(uint256 marketId, uint256 venueFeeBps, uint256 creatorFeeBps) internal {
+    /// @notice Snapshot fee BPS onto market registry (immutable per market).
+    function setFeeSnapshot(uint256 marketId, uint256 venueFeeBps, uint256 creatorFeeBps, uint256 protocolFeeBps) internal {
         MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
         registry.venueFeeBps = venueFeeBps;
         registry.creatorFeeBps = creatorFeeBps;
+        registry.protocolFeeBps = protocolFeeBps;
     }
 
     function setStatus(uint256 marketId, MarketStatus status) internal {

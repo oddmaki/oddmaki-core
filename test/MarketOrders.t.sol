@@ -43,9 +43,9 @@ contract MarketOrdersTest is Test, DiamondSetup {
     // Fee config: 100 bps venue, 30 bps creator
     uint256 constant VENUE_FEE_BPS = 100;
     uint256 constant CREATOR_FEE_BPS = 30;
-    uint256 constant PROTOCOL_FEE_BPS = 20;
+    uint256 constant PROTOCOL_FEE_BPS = 50;
     uint256 constant OPERATOR_FEE_BPS = 10;
-    uint256 constant TOTAL_FEE_BPS = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 130
+    uint256 constant TOTAL_FEE_BPS = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 160
     uint256 constant BPS_DENOMINATOR = 10_000;
 
     // =========================================================================
@@ -54,6 +54,12 @@ contract MarketOrdersTest is Test, DiamondSetup {
 
     function _collateral(uint256 tick, uint256 qty) internal pure returns (uint256) {
         return (tick * qty * TICK_SIZE) / 1e18;
+    }
+
+    /// @dev Returns collateral needed for a market buy including fee headroom
+    function _buyCollateral(uint256 tick, uint256 qty) internal pure returns (uint256) {
+        uint256 base = _collateral(tick, qty);
+        return base + (base * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
     }
 
     function _mintAndApprove(address user, uint256 amount) internal {
@@ -98,6 +104,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         VaultFacet(address(diamond)).setCtf(address(ctf));
         ProtocolFacet(address(diamond)).setCollateralWhitelisted(address(collateral), true);
         ProtocolFacet(address(diamond)).setProtocolTreasury(TREASURY);
+        ProtocolFacet(address(diamond)).setProtocolFeeBps(PROTOCOL_FEE_BPS);
 
         vm.prank(MARKET_CREATOR);
         venueId = VenueFacet(address(diamond)).createVenue(
@@ -132,7 +139,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 qty = 100e18;
         _placeSellOrder(BOB, tick, qty);
 
-        uint256 col = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         assertEq(r.tokensReceived, qty, "tokens received");
@@ -147,25 +154,26 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _placeSellOrder(BOB, tick, qty);
 
         uint256 before = ctf.balanceOf(ALICE, positionIds[0]);
-        uint256 col = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         assertEq(ctf.balanceOf(ALICE, positionIds[0]) - before, qty, "ALICE received YES tokens");
     }
 
     function test_marketBuy_partialSellOrder() public {
-        // Sell order is larger than what buyer can afford
+        // Sell order qty limits fill (sell 100 but buyer can afford more)
         uint256 tick = 60;
-        uint256 sellQty = 200e18;
+        uint256 sellQty = 100e18;
         _placeSellOrder(BOB, tick, sellQty);
 
-        // Buyer only has enough for 100 tokens
-        uint256 buyCol = _collateral(tick, 100e18);
+        // Buyer sends enough for 200 tokens (including fees) — sell order caps at 100
+        uint256 buyCol = _buyCollateral(tick, 200e18);
         MarketBuyResult memory r = _marketBuy(ALICE, buyCol, MAX_TICK, MarketOrderType.FAK);
 
-        assertEq(r.tokensReceived, 100e18, "buyer got 100 tokens");
-        assertEq(r.collateralSpent, buyCol, "all collateral spent");
-        assertEq(r.unusedCollateral, 0, "no unused collateral");
+        uint256 expectedSpent = _buyCollateral(tick, sellQty);
+        assertEq(r.tokensReceived, sellQty, "buyer got sell order qty");
+        assertEq(r.collateralSpent, expectedSpent, "spent cost + fees for 100 tokens");
+        assertEq(r.unusedCollateral, buyCol - expectedSpent, "remainder returned");
     }
 
     function test_marketBuy_multipleTickLevels() public {
@@ -176,8 +184,8 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _placeSellOrder(BOB, tick1, qty);
         _placeSellOrder(CAROL, tick2, qty);
 
-        // Buyer has enough for both levels
-        uint256 col = _collateral(tick1, qty) + _collateral(tick2, qty);
+        // Buyer has enough for both levels (including fees)
+        uint256 col = _buyCollateral(tick1, qty) + _buyCollateral(tick2, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         assertEq(r.tokensReceived, 2 * qty, "filled both levels");
@@ -206,20 +214,22 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 sellQty = 50e18;
         _placeSellOrder(BOB, tick, sellQty);
 
-        // Buyer sends more collateral than available liquidity
-        uint256 col = _collateral(tick, 100e18);
+        // Buyer sends more collateral than available liquidity (including fees)
+        uint256 col = _buyCollateral(tick, 100e18);
         uint256 aliceBefore = collateral.balanceOf(ALICE);
 
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        uint256 expectedSpent = _collateral(tick, sellQty);
+        // collateralSpent now includes fee (base cost + fee from buyer)
+        uint256 expectedSpent = _buyCollateral(tick, sellQty);
         assertEq(r.tokensReceived, sellQty, "got available tokens");
-        assertEq(r.collateralSpent, expectedSpent, "spent only what was needed");
+        assertEq(r.collateralSpent, expectedSpent, "spent base cost + fees");
         assertEq(r.unusedCollateral, col - expectedSpent, "remainder returned");
 
         // Verify collateral returned to ALICE (includes operator fee since ALICE is msg.sender)
         uint256 aliceAfter = collateral.balanceOf(ALICE);
-        uint256 operatorFee = (expectedSpent * OPERATOR_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 baseCost = _collateral(tick, sellQty);
+        uint256 operatorFee = (baseCost * OPERATOR_FEE_BPS) / BPS_DENOMINATOR;
         assertEq(aliceAfter - aliceBefore, r.unusedCollateral + operatorFee, "ALICE got remainder + operator fee");
     }
 
@@ -248,13 +258,13 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _placeSellOrder(BOB, 60, 100e18);
         _placeSellOrder(CAROL, 70, 100e18);
 
-        // Buyer limits to tick 60
-        uint256 col = _collateral(60, 100e18) + _collateral(70, 100e18);
+        // Buyer limits to tick 60 (send enough for both, but only tick 60 should fill)
+        uint256 col = _buyCollateral(60, 100e18) + _buyCollateral(70, 100e18);
         MarketBuyResult memory r = _marketBuy(ALICE, col, 60, MarketOrderType.FAK);
 
-        // Should only fill at tick 60, not 70
+        // Should only fill at tick 60, not 70 (collateralSpent includes fee)
         assertEq(r.tokensReceived, 100e18, "only filled at tick 60");
-        assertEq(r.collateralSpent, _collateral(60, 100e18), "only spent for tick 60");
+        assertEq(r.collateralSpent, _buyCollateral(60, 100e18), "only spent for tick 60");
         assertGt(r.unusedCollateral, 0, "remainder from tick 70 liquidity not consumed");
     }
 
@@ -267,14 +277,14 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 qty = 100e18;
         _placeSellOrder(BOB, tick, qty);
 
-        uint256 col = _collateral(tick, qty);
+        uint256 baseCost = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         uint256 bobBefore = collateral.balanceOf(BOB);
 
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        uint256 expectedTotalFee = (col * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 expectedSellerPayout = col - expectedTotalFee;
-        assertEq(collateral.balanceOf(BOB) - bobBefore, expectedSellerPayout, "seller payout reduced by fees");
+        // Seller (maker) now gets FULL base cost — fee comes from buyer's collateral
+        assertEq(collateral.balanceOf(BOB) - bobBefore, baseCost, "seller gets full base cost");
     }
 
     function test_marketBuy_withFees_feesDistributed() public {
@@ -282,7 +292,8 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 qty = 100e18;
         _placeSellOrder(BOB, tick, qty);
 
-        uint256 col = _collateral(tick, qty);
+        uint256 baseCost = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
 
         uint256 treasuryBefore = collateral.balanceOf(TREASURY);
         uint256 feeRecipientBefore = collateral.balanceOf(FEE_RECIPIENT);
@@ -292,13 +303,14 @@ contract MarketOrdersTest is Test, DiamondSetup {
         // ALICE is both buyer and operator (msg.sender)
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        uint256 protocolFee = (col * PROTOCOL_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 venueNetFee = (col * (VENUE_FEE_BPS - CREATOR_FEE_BPS)) / BPS_DENOMINATOR;
-        uint256 creatorFee = (col * CREATOR_FEE_BPS) / BPS_DENOMINATOR;
-        uint256 operatorFee = (col * OPERATOR_FEE_BPS) / BPS_DENOMINATOR;
+        // Fee is computed on the base cost (not on col which includes fee headroom)
+        uint256 protocolFee = (baseCost * PROTOCOL_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 venueNetFee = (baseCost * (VENUE_FEE_BPS - CREATOR_FEE_BPS)) / BPS_DENOMINATOR;
+        uint256 creatorFee = (baseCost * CREATOR_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 operatorFee = (baseCost * OPERATOR_FEE_BPS) / BPS_DENOMINATOR;
 
         uint256 totalComponents = protocolFee + venueNetFee + creatorFee + operatorFee;
-        uint256 expectedTotal = (col * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 expectedTotal = (baseCost * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
         uint256 remainder = expectedTotal > totalComponents ? expectedTotal - totalComponents : 0;
 
         assertEq(collateral.balanceOf(TREASURY) - treasuryBefore, protocolFee + remainder, "treasury fee");
@@ -318,7 +330,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 qty = 100e18;
         uint256 sellOrderId = _placeSellOrder(BOB, tick, qty);
 
-        uint256 col = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         // Read fill from Diamond storage (same pattern as Fees.t.sol)
@@ -352,7 +364,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         // Warp past expiry of first order
         vm.warp(block.timestamp + 2);
 
-        uint256 col = _collateral(60, 100e18);
+        uint256 col = _buyCollateral(60, 100e18);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         // Should skip expired order at tick 50 and fill at tick 60
@@ -372,11 +384,13 @@ contract MarketOrdersTest is Test, DiamondSetup {
         MarketTradingData memory tdBefore = MarketsFacet(address(diamond)).getMarketTradingData(marketId);
         uint256 volBefore = tdBefore.totalVolume[0];
 
-        uint256 col = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         MarketTradingData memory tdAfter = MarketsFacet(address(diamond)).getMarketTradingData(marketId);
-        assertEq(tdAfter.totalVolume[0] - volBefore, col, "volume tracked");
+        // Volume tracks base cost (not including fees)
+        uint256 baseCost = _collateral(tick, qty);
+        assertEq(tdAfter.totalVolume[0] - volBefore, baseCost, "volume tracked");
         assertEq(tdAfter.lastTradeTick[0], tick, "last trade tick updated");
     }
 
@@ -414,7 +428,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 qty = 100e18;
         _placeSellOrder(BOB, tick, qty);
 
-        uint256 col = _collateral(tick, qty);
+        uint256 col = _buyCollateral(tick, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
         // avgPrice = collateralSpent * 1e18 / tokensReceived
@@ -427,10 +441,10 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _placeSellOrder(BOB, 50, qty);
         _placeSellOrder(CAROL, 70, qty);
 
-        uint256 col = _collateral(50, qty) + _collateral(70, qty);
+        uint256 col = _buyCollateral(50, qty) + _buyCollateral(70, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        // Should be weighted average of tick 50 and tick 70
+        // Should be weighted average of tick 50 and tick 70 (including fees)
         uint256 expectedAvg = (col * 1e18) / (2 * qty);
         assertEq(r.avgPrice, expectedAvg, "weighted avg price");
     }
@@ -440,20 +454,16 @@ contract MarketOrdersTest is Test, DiamondSetup {
     // =========================================================================
 
     function test_marketBuy_fok_roundingDust_succeeds() public {
-        // Sufficient liquidity exists at tick 33
-        _placeSellOrder(BOB, 33, 1000e18);
+        // Place a sell order smaller than what the buyer can afford,
+        // so the sell order qty limits the fill and rounding dust remains.
+        // At tick 33, 30 tokens cost 9.9e18. _buyCollateral rounds to include fees.
+        // The sell order (30e18) caps the fill, leaving small dust in remaining.
+        _placeSellOrder(BOB, 33, 30e18);
 
-        // 10e18 collateral is not evenly divisible by pricePerToken (33 * 1e16).
-        // Integer division in affordableQty and cost leaves 1 wei of dust:
-        //   affordableQty = (10e18 * 1e18) / 33e16 = 30303030303030303030 (truncated)
-        //   cost = (30303030303030303030 * 33e16) / 1e18 = 9999999999999999999 (truncated)
-        //   remaining = 10e18 - 9999999999999999999 = 1 wei
-        // Before fix: FOK reverts with InsufficientLiquidityForFOK
-        // After fix: FOK succeeds, returning the 1 wei dust to buyer
-        uint256 col = 10e18;
+        uint256 col = _buyCollateral(33, 30e18);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FOK);
 
-        assertGt(r.tokensReceived, 0, "received tokens");
+        assertEq(r.tokensReceived, 30e18, "received tokens");
         assertLe(r.unusedCollateral, TICK_SIZE, "dust is within threshold");
         assertEq(r.collateralSpent + r.unusedCollateral, col, "accounting is sound");
     }

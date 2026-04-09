@@ -42,9 +42,9 @@ contract FeesTest is Test, DiamondSetup {
     // Venue config: 100 bps venue fee, 30 bps creator fee
     uint256 constant VENUE_FEE_BPS = 100;
     uint256 constant CREATOR_FEE_BPS = 30;
-    uint256 constant PROTOCOL_FEE_BPS = 20;
+    uint256 constant PROTOCOL_FEE_BPS = 50;
     uint256 constant OPERATOR_FEE_BPS = 10;
-    // Total = 20 + 100 + 10 = 130 bps
+    // Total = 50 + 100 + 10 = 160 bps
     uint256 constant TOTAL_FEE_BPS = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS;
     uint256 constant BPS_DENOMINATOR = 10_000;
 
@@ -85,6 +85,7 @@ contract FeesTest is Test, DiamondSetup {
 
         // Set protocol treasury to enable fees
         ProtocolFacet(address(diamond)).setProtocolTreasury(TREASURY);
+        ProtocolFacet(address(diamond)).setProtocolFeeBps(PROTOCOL_FEE_BPS);
 
         // Create venue with specific fee config
         vm.prank(MARKET_CREATOR);
@@ -374,9 +375,11 @@ contract FeesTest is Test, DiamondSetup {
         uint256 fillCount = MatchingFacet(address(diamond)).matchOrders(marketId, 10);
         assertEq(fillCount, 1, "should fill with sufficient spread");
 
-        // Sellers get collateral at their ask prices
+        // Maker (ALICE, lower orderId) gets full collateral at ask price
         assertEq(collateral.balanceOf(ALICE) - aliceBefore, _collateral(yesAsk, qty), "ALICE payout");
-        assertEq(collateral.balanceOf(BOB) - bobBefore, _collateral(noAsk, qty), "BOB payout");
+        // Taker (BOB, higher orderId) pays ALL fees from their collateral
+        uint256 totalFee = (qty * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
+        assertEq(collateral.balanceOf(BOB) - bobBefore, _collateral(noAsk, qty) - totalFee, "BOB payout");
     }
 
     function test_mergeFill_withFees_feesDistributed() public {
@@ -619,7 +622,7 @@ contract FeesTest is Test, DiamondSetup {
 
         // Fees should use ORIGINAL snapshot (100 bps venue, 30 bps creator),
         // NOT the updated 200 bps venue / 0 bps creator
-        uint256 originalTotalBps = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 20+100+10=130
+        uint256 originalTotalBps = PROTOCOL_FEE_BPS + VENUE_FEE_BPS + OPERATOR_FEE_BPS; // 50+100+10=160
         uint256 expectedTotalFee = (col * originalTotalBps) / BPS_DENOMINATOR;
         uint256 expectedSellerPayout = col - expectedTotalFee;
 
@@ -675,7 +678,7 @@ contract FeesTest is Test, DiamondSetup {
         MatchingFacet(address(diamond)).matchOrders(newMarketId, 10);
 
         // New market should use 50 bps venue fee (not original 100)
-        uint256 newTotalBps = PROTOCOL_FEE_BPS + 50 + OPERATOR_FEE_BPS; // 20+50+10=80
+        uint256 newTotalBps = PROTOCOL_FEE_BPS + 50 + OPERATOR_FEE_BPS; // 50+50+10=110
         uint256 expectedTotalFee = (col * newTotalBps) / BPS_DENOMINATOR;
         uint256 expectedSellerPayout = col - expectedTotalFee;
 

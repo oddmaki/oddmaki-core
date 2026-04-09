@@ -73,11 +73,25 @@ library LibMergeFillService {
         // Merge the Diamond's pooled outcome tokens to release collateral
         LibVaultPositionService.mergePositions(address(md.collateralToken), conditionId, qty);
 
-        // Pay each seller at their respective ask price
+        // Pay each seller: maker gets full ask payout, taker pays all fees
         uint256 yesCollateral = (qty * yesAsk * md.tickSize) / 1e18;
         uint256 noCollateral  = (qty * noAsk  * md.tickSize) / 1e18;
-        LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral);
-        LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral);
+
+        // Fee calculation: fee base is qty (notional = 1.0 per token set)
+        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(qty, fees);
+        uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
+
+        // Maker/taker payout (must happen before order deletion which zeroes owner)
+        {
+            bool yesIsTaker = (yesHead > noHead);
+            if (yesIsTaker) {
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral - feeTotal);
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral);
+            } else {
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral);
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral - feeTotal);
+            }
+        }
 
         // Update YES order; always decrement totalQty first, then dequeue/delete fully-filled orders
         LibOrderBookAggregate.recordFillOnBook(marketId, 0, Side.SELL, yesAsk, qty);
@@ -97,9 +111,6 @@ library LibMergeFillService {
 
         // Volume NOT recorded: merge-to-fill is sellers exiting, not buyers acquiring
 
-        // Fee calculation: fee base is qty (notional = 1.0 per token set)
-        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(qty, fees);
-
         // Record fill
         uint256 fillId = LibFillAggregate.recordFill(
             marketId, SettlementPath.MERGE, yesHead, noHead, qty, yesAsk
@@ -111,7 +122,7 @@ library LibMergeFillService {
         );
 
         // Route surplus collateral (rounding dust from tick-price discretization) to protocol treasury
-        uint256 totalConsumed = yesCollateral + noCollateral + breakdown.totalFee + breakdown.remainder;
+        uint256 totalConsumed = yesCollateral + noCollateral + feeTotal;
         if (qty > totalConsumed) {
             uint256 surplus = qty - totalConsumed;
             if (fees.protocolTreasury != address(0)) {

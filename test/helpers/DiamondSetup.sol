@@ -166,7 +166,7 @@ contract DiamondSetup is Test {
         orderBookSelectors[5] = OrderBookFacet.canMatchOrders.selector;
         cuts[9] = _cut(address(_orderBookFacet), orderBookSelectors);
 
-        bytes4[] memory protocolSelectors = new bytes4[](16);
+        bytes4[] memory protocolSelectors = new bytes4[](18);
         protocolSelectors[0] = ProtocolFacet.setProtocolTreasury.selector;
         protocolSelectors[1] = ProtocolFacet.getProtocolTreasury.selector;
         protocolSelectors[2] = ProtocolFacet.setUmaOracle.selector;
@@ -183,6 +183,8 @@ contract DiamondSetup is Test {
         protocolSelectors[13] = ProtocolFacet.unsuspendVenue.selector;
         protocolSelectors[14] = ProtocolFacet.getVenueSuspended.selector;
         protocolSelectors[15] = ProtocolFacet.withdrawERC20.selector;
+        protocolSelectors[16] = ProtocolFacet.setProtocolFeeBps.selector;
+        protocolSelectors[17] = ProtocolFacet.getProtocolFeeBps.selector;
         cuts[10] = _cut(address(_protocolFacet), protocolSelectors);
 
         bytes4[] memory marketGroupSelectors = new bytes4[](6);

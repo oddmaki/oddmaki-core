@@ -70,8 +70,9 @@ struct MarketRegistryData {
     bytes32 questionId;
     address oracle;
     uint256 tickSize;
-    uint256 venueFeeBps;    // Snapshotted at market creation (H-2 fix)
-    uint256 creatorFeeBps;  // Snapshotted at market creation (H-2 fix)
+    uint256 venueFeeBps;      // Snapshotted at market creation (H-2 fix)
+    uint256 creatorFeeBps;    // Snapshotted at market creation (H-2 fix)
+    uint256 protocolFeeBps;   // Snapshotted at market creation (0-200 bps)
 }
 
 /// @notice Oracle / CTF: condition, outcomes, UMA economics. Keyed by questionId.

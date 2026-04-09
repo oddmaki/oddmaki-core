@@ -7,6 +7,7 @@ import {LibMarketTradingAggregate} from "../aggregates/LibMarketTradingAggregate
 import {LibVaultRegistrationService} from "./LibVaultRegistrationService.sol";
 import {LibOracleInitializationService} from "./LibOracleInitializationService.sol";
 import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
+import {LibProtocolStorage} from "../storage/LibProtocolStorage.sol";
 import {LibAncillaryData} from "../libraries/LibAncillaryData.sol";
 import {LibTagValidator} from "../validators/LibTagValidator.sol";
 import {LibTickSizeValidator} from "../validators/LibTickSizeValidator.sol";
@@ -110,11 +111,12 @@ library LibMarketCreationService {
             tickSize
         );
 
-        // Step 6b: Snapshot venue fee BPS onto market (H-2 fix: immutable per market).
+        // Step 6b: Snapshot fee BPS onto market (immutable per market).
         LibMarketRegistryAggregate.setFeeSnapshot(
             marketId,
             LibVenueStorage.getVenueData(venueId).venueFeeBps,
-            LibVenueStorage.getVenueData(venueId).creatorFeeBps
+            LibVenueStorage.getVenueData(venueId).creatorFeeBps,
+            LibProtocolStorage.getProtocolFeeBps()
         );
 
         // Step 7: Oracle initialization.

@@ -100,9 +100,8 @@ library LibMarketOrderService {
             MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
             FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(cost, fees);
 
-            // Settlement: seller gets cost minus fees, buyer gets outcome tokens
-            uint256 sellerPayout = cost - breakdown.totalFee - breakdown.remainder;
-            LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, sellerPayout);
+            // Settlement: seller (maker) gets full cost, buyer (taker) pays fees from remaining
+            LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, cost);
             LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[outcomeId], msg.sender, fillQty);
 
             // Record fill (order1Id = 0 indicates market order taker)
@@ -128,6 +127,7 @@ library LibMarketOrderService {
             LibMarketTradingAggregate.recordLastTradeTick(marketId, outcomeId, bestAsk);
 
             remaining -= cost;
+            remaining -= (breakdown.totalFee + breakdown.remainder);
             totalTokens += fillQty;
         }
 

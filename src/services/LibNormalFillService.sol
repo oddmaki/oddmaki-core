@@ -30,6 +30,8 @@ library LibNormalFillService {
         uint256 priceTick
     );
 
+    event OrderAutoCancelled(uint256 indexed orderId, uint256 refundedCollateral);
+
     event TradeExecuted(
         uint256 indexed marketId,
         uint256 indexed outcomeId,
@@ -73,23 +75,53 @@ library LibNormalFillService {
             Order storage buyOrder = LibOrderStorage.getOrder(buyHead);
             Order storage sellOrder = LibOrderStorage.getOrder(sellHead);
 
-            uint256 qty = buyOrder.qty < sellOrder.qty ? buyOrder.qty : sellOrder.qty;
-            uint256 collateral = (qty * bestAsk * md.tickSize) / 1e18;
-
-            // Fee calculation
+            // Determine maker/taker: lower orderId placed first = maker (0% fee)
+            bool buyerIsTaker = (buyOrder.id > sellOrder.id);
             MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
+            uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
+
+            // Base qty limited by order sizes
+            uint256 qty = buyOrder.qty < sellOrder.qty ? buyOrder.qty : sellOrder.qty;
+
+            // When buyer is taker: reduce qty so buyer's deposit covers trade + fee
+            if (buyerIsTaker && totalFeeBps > 0) {
+                // Buyer's available deposit for this fill = qty * bestBid (in collateral terms)
+                // Each token costs bestAsk + fee = bestAsk * (BPS + totalFeeBps) / BPS
+                // affordableQty = buyerDeposit / costPerToken (in tick math to avoid decimals)
+                // = (qty * bestBid * BPS) / (bestAsk * (BPS + totalFeeBps))
+                uint256 affordableQty = (qty * bestBid * LibFeeCalculatorService.BPS_DENOMINATOR)
+                    / (bestAsk * (LibFeeCalculatorService.BPS_DENOMINATOR + totalFeeBps));
+                if (affordableQty < qty) {
+                    qty = affordableQty;
+                }
+                if (qty == 0) return false;
+            }
+
+            uint256 collateral = (qty * bestAsk * md.tickSize) / 1e18;
             FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(collateral, fees);
+            uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
 
-            // Settlement: seller gets collateral minus fees, buyer gets outcome tokens
-            uint256 sellerPayout = collateral - breakdown.totalFee - breakdown.remainder;
-            LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, sellerPayout);
-            LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[outcomeId], buyOrder.owner, qty);
-
-            // Refund buyer price improvement surplus (execute at maker price, return difference)
-            if (bestBid > bestAsk) {
-                uint256 buyerSurplus = (qty * (bestBid - bestAsk) * md.tickSize) / 1e18;
-                if (buyerSurplus > 0) {
-                    LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, buyerSurplus);
+            // Settlement: maker gets full amount, taker pays fees
+            if (buyerIsTaker) {
+                // Seller (maker): gets full collateral
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, collateral);
+                LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[outcomeId], buyOrder.owner, qty);
+                // Buyer (taker): surplus = deposit - trade - fee
+                uint256 buyerDeposit = (qty * bestBid * md.tickSize) / 1e18;
+                uint256 buyerRefund = buyerDeposit - collateral - feeTotal;
+                if (buyerRefund > 0) {
+                    LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, buyerRefund);
+                }
+            } else {
+                // Seller (taker): pays fees from proceeds
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, collateral - feeTotal);
+                LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[outcomeId], buyOrder.owner, qty);
+                // Buyer (maker): full surplus refund
+                if (bestBid > bestAsk) {
+                    uint256 buyerSurplus = (qty * (bestBid - bestAsk) * md.tickSize) / 1e18;
+                    if (buyerSurplus > 0) {
+                        LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, buyerSurplus);
+                    }
                 }
             }
 
@@ -109,6 +141,32 @@ library LibNormalFillService {
             if (newBuyQty == 0) {
                 LibOrderBookService.dequeueOrder(buyHead);
                 LibOrderAggregate.deleteOrder(buyHead);
+            } else if (buyerIsTaker && totalFeeBps > 0) {
+                // Auto-cancel unfunded remainder: fee erosion means the remaining
+                // collateral can't back the remainder at this bid price.
+                // Underfunded when: bestBid * BPS < bestAsk * (BPS + totalFeeBps)
+                // i.e., bid doesn't have enough margin above ask to absorb future fees.
+                uint256 bps = LibFeeCalculatorService.BPS_DENOMINATOR;
+                if (bestBid * bps < bestAsk * (bps + totalFeeBps)) {
+                    uint256 dust = (newBuyQty * bestBid * md.tickSize) / 1e18;
+                    // Fee consumed part of this backing — compute actual remaining
+                    // Original deposit for unfilled portion was accounted for, but fee
+                    // ate into it. Dust = whatever is left after the fill consumed
+                    // (qty * bestBid) worth of deposit and we already refunded surplus.
+                    // Remaining in Diamond for this order = newBuyQty * bestBid - feeDeficit
+                    // feeDeficit = feeTotal - surplus (surplus already refunded)
+                    uint256 surplus = bestBid > bestAsk ? (qty * (bestBid - bestAsk) * md.tickSize) / 1e18 : 0;
+                    uint256 feeDeficit = feeTotal > surplus ? feeTotal - surplus : 0;
+                    dust = dust > feeDeficit ? dust - feeDeficit : 0;
+
+                    LibOrderBookAggregate.recordFillOnBook(marketId, outcomeId, Side.BUY, bestBid, newBuyQty);
+                    LibOrderBookService.dequeueOrder(buyHead);
+                    LibOrderAggregate.deleteOrder(buyHead);
+                    if (dust > 0) {
+                        LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, dust);
+                    }
+                    emit OrderAutoCancelled(buyHead, dust);
+                }
             }
 
             LibOrderBookAggregate.recordFillOnBook(marketId, outcomeId, Side.SELL, bestAsk, qty);

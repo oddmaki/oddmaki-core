@@ -16,6 +16,7 @@ library LibProtocolStorage {
         mapping(address => bool) collateralWhitelist;
         bool protocolPaused;
         mapping(uint256 => bool) venueSuspended;
+        uint256 protocolFeeBps;
     }
 
     function getStorage() internal pure returns (Storage storage s) {
@@ -51,5 +52,9 @@ library LibProtocolStorage {
 
     function isVenueSuspended(uint256 venueId) internal view returns (bool) {
         return getStorage().venueSuspended[venueId];
+    }
+
+    function getProtocolFeeBps() internal view returns (uint256) {
+        return getStorage().protocolFeeBps;
     }
 }

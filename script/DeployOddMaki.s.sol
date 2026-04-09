@@ -245,6 +245,9 @@ contract DeployOddMakiScript is Script {
         ProtocolFacet(address(protocol)).setProtocolTreasury(protocolTreasury);
         console.log("  Protocol treasury set to:", protocolTreasury);
 
+        ProtocolFacet(address(protocol)).setProtocolFeeBps(50);
+        console.log("  Protocol fee set to: 50 bps");
+
         ProtocolFacet(address(protocol)).setUmaOracle(umaOracleAddress);
         console.log("  UMA Oracle set to:", umaOracleAddress);
 

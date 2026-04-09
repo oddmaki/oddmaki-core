@@ -40,4 +40,9 @@ library LibProtocolAggregate {
     function setVenueSuspended(uint256 venueId, bool suspended) internal {
         LibProtocolStorage.getStorage().venueSuspended[venueId] = suspended;
     }
+
+    function setProtocolFeeBps(uint256 bps) internal {
+        require(bps <= 200, "Protocol fee exceeds max");
+        LibProtocolStorage.getStorage().protocolFeeBps = bps;
+    }
 }

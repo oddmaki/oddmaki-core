@@ -16,6 +16,7 @@ import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
  */
 contract ProtocolFacet {
     event ProtocolTreasuryUpdated(address indexed treasury);
+    event ProtocolFeeBpsUpdated(uint256 bps);
     event UmaOracleUpdated(address indexed oracle);
     event UmaIdentifierUpdated(bytes32 identifier);
     event EthWithdrawn(address indexed recipient, uint256 amount);
@@ -38,6 +39,19 @@ contract ProtocolFacet {
     /// @notice Get the current protocol treasury address.
     function getProtocolTreasury() external view returns (address) {
         return LibProtocolStorage.getProtocolTreasury();
+    }
+
+    /// @notice Set the protocol fee in basis points. Owner-only. Max 200 bps (2%).
+    /// @param bps the new protocol fee in basis points.
+    function setProtocolFeeBps(uint256 bps) external {
+        LibDiamond.enforceIsContractOwner();
+        LibProtocolAggregate.setProtocolFeeBps(bps);
+        emit ProtocolFeeBpsUpdated(bps);
+    }
+
+    /// @notice Get the current protocol fee in basis points.
+    function getProtocolFeeBps() external view returns (uint256) {
+        return LibProtocolStorage.getProtocolFeeBps();
     }
 
     /// @notice Set the UMA Optimistic Oracle V3 contract address. Owner-only.

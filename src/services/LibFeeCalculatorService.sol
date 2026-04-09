@@ -10,16 +10,16 @@ import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol"
  * @title LibFeeCalculatorService
  * @notice Fee config reader (composed view) + pure fee math.
  *
- * Venue-Controlled Fee Model:
- * - Protocol: 20 bps (fixed) -> protocol treasury
- * - Venue: 1-200 bps (configurable) -> split between venue net and creator
+ * Fee Model:
+ * - Protocol: 0-200 bps (configurable, snapshotted per market) -> protocol treasury
+ * - Venue: 1-200 bps (configurable, snapshotted per market) -> split between venue net and creator
  * - Operator: 10 bps (fixed) -> msg.sender who called matchOrders
+ * - Maker pays 0%. Taker bears all fees.
  *
  * Rounding: floor each component, remainder goes to protocol during distribution.
  */
 library LibFeeCalculatorService {
     uint256 constant BPS_DENOMINATOR = 10_000;
-    uint256 constant PROTOCOL_FEE_BPS = 20;
     uint256 constant OPERATOR_FEE_BPS = 10;
 
     // =========================================================================
@@ -41,7 +41,7 @@ library LibFeeCalculatorService {
         MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
         VenueData storage venue = LibVenueStorage.getVenueData(registry.venueId);
 
-        fees.protocolFeeBps = PROTOCOL_FEE_BPS;
+        fees.protocolFeeBps = registry.protocolFeeBps;
         fees.venueFeeBps = registry.venueFeeBps;
         fees.creatorFeeBps = registry.creatorFeeBps;
         fees.operatorFeeBps = OPERATOR_FEE_BPS;
@@ -120,5 +120,17 @@ library LibFeeCalculatorService {
         uint256 totalFeeBps = getTotalFeeBps(fees);
         uint256 maxAllowedTicks = (fullPriceTicks * (BPS_DENOMINATOR - totalFeeBps)) / BPS_DENOMINATOR;
         return (yesAskTick + noAskTick) <= maxAllowedTicks;
+    }
+
+    // =========================================================================
+    // SNAPSHOT HELPERS
+    // =========================================================================
+
+    /**
+     * @notice Total fee BPS from market snapshot (protocol + venue + operator).
+     */
+    function getSnapshotedTotalFeeBps(uint256 marketId) internal view returns (uint256) {
+        MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
+        return registry.protocolFeeBps + registry.venueFeeBps + OPERATOR_FEE_BPS;
     }
 }
