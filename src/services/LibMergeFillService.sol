@@ -84,12 +84,15 @@ library LibMergeFillService {
         // Maker/taker payout (must happen before order deletion which zeroes owner)
         {
             bool yesIsTaker = (yesHead > noHead);
+            // Guard: cap fee deduction at taker's collateral to prevent underflow
+            uint256 takerCol = yesIsTaker ? yesCollateral : noCollateral;
+            uint256 takerFeeDeduction = feeTotal > takerCol ? takerCol : feeTotal;
             if (yesIsTaker) {
-                LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral - feeTotal);
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral - takerFeeDeduction);
                 LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral);
             } else {
                 LibVaultCollateralService.transferCollateral(address(md.collateralToken), yesOrder.owner, yesCollateral);
-                LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral - feeTotal);
+                LibVaultCollateralService.transferCollateral(address(md.collateralToken), noOrder.owner,  noCollateral - takerFeeDeduction);
             }
         }
 

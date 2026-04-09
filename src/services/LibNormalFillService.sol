@@ -82,6 +82,7 @@ library LibNormalFillService {
 
             // Base qty limited by order sizes
             uint256 qty = buyOrder.qty < sellOrder.qty ? buyOrder.qty : sellOrder.qty;
+            uint256 baseQty = qty; // save before affordable reduction for deposit calc
 
             // When buyer is taker: reduce qty so buyer's deposit covers trade + fee
             if (buyerIsTaker && totalFeeBps > 0) {
@@ -106,9 +107,11 @@ library LibNormalFillService {
                 // Seller (maker): gets full collateral
                 LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, collateral);
                 LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[outcomeId], buyOrder.owner, qty);
-                // Buyer (taker): surplus = deposit - trade - fee
-                uint256 buyerDeposit = (qty * bestBid * md.tickSize) / 1e18;
-                uint256 buyerRefund = buyerDeposit - collateral - feeTotal;
+                // Buyer (taker): refund = deposit - trade - fee
+                // Use baseQty (pre-reduction) for deposit since that's what buyer actually has at stake
+                uint256 buyerDeposit = (baseQty * bestBid * md.tickSize) / 1e18;
+                uint256 consumed = collateral + feeTotal;
+                uint256 buyerRefund = buyerDeposit > consumed ? buyerDeposit - consumed : 0;
                 if (buyerRefund > 0) {
                     LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, buyerRefund);
                 }
@@ -145,27 +148,15 @@ library LibNormalFillService {
                 // Auto-cancel unfunded remainder: fee erosion means the remaining
                 // collateral can't back the remainder at this bid price.
                 // Underfunded when: bestBid * BPS < bestAsk * (BPS + totalFeeBps)
-                // i.e., bid doesn't have enough margin above ask to absorb future fees.
                 uint256 bps = LibFeeCalculatorService.BPS_DENOMINATOR;
                 if (bestBid * bps < bestAsk * (bps + totalFeeBps)) {
-                    uint256 dust = (newBuyQty * bestBid * md.tickSize) / 1e18;
-                    // Fee consumed part of this backing — compute actual remaining
-                    // Original deposit for unfilled portion was accounted for, but fee
-                    // ate into it. Dust = whatever is left after the fill consumed
-                    // (qty * bestBid) worth of deposit and we already refunded surplus.
-                    // Remaining in Diamond for this order = newBuyQty * bestBid - feeDeficit
-                    // feeDeficit = feeTotal - surplus (surplus already refunded)
-                    uint256 surplus = bestBid > bestAsk ? (qty * (bestBid - bestAsk) * md.tickSize) / 1e18 : 0;
-                    uint256 feeDeficit = feeTotal > surplus ? feeTotal - surplus : 0;
-                    dust = dust > feeDeficit ? dust - feeDeficit : 0;
-
-                    LibOrderBookAggregate.recordFillOnBook(marketId, outcomeId, Side.BUY, bestBid, newBuyQty);
+                    // Zero out qty before dequeue so removeOrderFromLevel subtracts 0 from totalQty
+                    // (totalQty was already decremented by recordFillOnBook above for the fill portion,
+                    //  and reduceOrderQty left newBuyQty in order.qty which we now zero)
+                    LibOrderAggregate.reduceOrderQty(buyHead, newBuyQty);
                     LibOrderBookService.dequeueOrder(buyHead);
                     LibOrderAggregate.deleteOrder(buyHead);
-                    if (dust > 0) {
-                        LibVaultCollateralService.transferCollateral(address(md.collateralToken), buyOrder.owner, dust);
-                    }
-                    emit OrderAutoCancelled(buyHead, dust);
+                    emit OrderAutoCancelled(buyHead, 0);
                 }
             }
 

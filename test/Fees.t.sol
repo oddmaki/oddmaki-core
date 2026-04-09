@@ -9,7 +9,8 @@ import {MarketsFacet} from "../src/facets/MarketsFacet.sol";
 import {LimitOrdersFacet} from "../src/facets/LimitOrdersFacet.sol";
 import {MatchingFacet} from "../src/facets/MatchingFacet.sol";
 import {ProtocolFacet} from "../src/facets/ProtocolFacet.sol";
-import {MarketTradingData, Side, Fill, SettlementPath} from "../src/interfaces/Types.sol";
+import {MarketOrdersFacet} from "../src/facets/MarketOrdersFacet.sol";
+import {MarketTradingData, Side, Fill, SettlementPath, MarketOrderType, Order} from "../src/interfaces/Types.sol";
 import {LibFillStorage} from "../src/storage/LibFillStorage.sol";
 import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
@@ -34,6 +35,7 @@ contract FeesTest is Test, DiamondSetup {
     address constant ALICE = address(0xA11CE);
     address constant BOB = address(0xB0B);
     address constant CAROL = address(0xCA801);
+    address constant DAVE = address(0xDA7E);
     address constant TREASURY = address(0x7EA5);
     address constant FEE_RECIPIENT = address(0xFEE);
     address constant MARKET_CREATOR = address(0xC8EA);
@@ -683,6 +685,213 @@ contract FeesTest is Test, DiamondSetup {
         uint256 expectedSellerPayout = col - expectedTotalFee;
 
         assertEq(collateral.balanceOf(BOB) - bobBefore, expectedSellerPayout, "new market uses current venue fees");
+    }
+
+    // =========================================================================
+    // Bug 1: NormalFill buyer-taker underflow when bid == ask
+    // =========================================================================
+
+    function test_normalFill_buyerTaker_bidEqualsAsk_noUnderflow() public {
+        // ALICE buys first at tick=60 → orderId=1 (will be taker when seller rests first)
+        // Actually: to make buyer the TAKER, the sell must be placed FIRST.
+        // BOB sells first (orderId=1, maker), ALICE buys second (orderId=2, taker)
+        uint256 tick = 60;
+        uint256 qty = 100e18;
+        uint256 col = _collateral(tick, qty);
+
+        // BOB places SELL first (maker)
+        _splitForUser(BOB, qty);
+        vm.prank(BOB);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, qty, 0);
+
+        // ALICE places BUY second (taker) — bid == ask
+        _mintAndApprove(ALICE, col);
+        vm.prank(ALICE);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, qty, 0);
+
+        // This should NOT revert — reduced fill + auto-cancel should handle it
+        vm.prank(OPERATOR);
+        uint256 fillCount = MatchingFacet(address(diamond)).matchOrders(marketId, 10);
+        assertEq(fillCount, 1, "should fill");
+
+        // BOB (maker) gets full collateral at ask price
+        // ALICE (taker) gets reduced qty (fewer tokens), order remainder auto-cancelled
+        assertGt(ctf.balanceOf(ALICE, positionIds[0]), 0, "ALICE received tokens");
+        // ALICE should get slightly less than 100 tokens (fee reduced the fill)
+        assertLt(ctf.balanceOf(ALICE, positionIds[0]), qty, "ALICE got reduced qty due to fees");
+    }
+
+    // =========================================================================
+    // Bug 2: MarketBuy underflow when remaining consumed by cost before fee
+    // =========================================================================
+
+    function test_marketBuy_exactCollateral_noUnderflow() public {
+        // Seller has exactly as many tokens as buyer can afford at price
+        uint256 tick = 60;
+        uint256 qty = 100e18;
+
+        _splitForUser(BOB, qty);
+        vm.prank(BOB);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, qty, 0);
+
+        // Buyer deposits exactly the base cost (no fee headroom)
+        uint256 col = _collateral(tick, qty); // 60e18
+
+        _mintAndApprove(ALICE, col);
+        vm.prank(ALICE);
+        // This should NOT revert — fee-aware affordableQty should prevent underflow
+        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, 100, MarketOrderType.FAK);
+
+        // ALICE should get fewer than 100 tokens (fee reduces affordable qty)
+        assertGt(ctf.balanceOf(ALICE, positionIds[0]), 0, "ALICE received tokens");
+        assertLt(ctf.balanceOf(ALICE, positionIds[0]), qty, "ALICE got reduced qty due to fees");
+    }
+
+    // =========================================================================
+    // Bug 3: Merge taker with very low ask price
+    // =========================================================================
+
+    function test_mergeFill_takerLowAskPrice_noUnderflow() public {
+        // YES seller at very low price (tick=3), NO seller at high price (tick=95)
+        // Sum = 98, maxAllowed with 160 bps = 100 * (10000-160)/10000 = 98.4 → 98 <= 98 ✓ feasible
+        uint256 yesAsk = 3;
+        uint256 noAsk = 95;
+        uint256 qty = 100e18;
+
+        // ALICE sells YES (orderId=1, maker)
+        _splitForUser(ALICE, qty);
+        vm.prank(ALICE);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, yesAsk, qty, 0);
+
+        // BOB sells NO (orderId=2, taker)
+        _splitForUser(BOB, qty);
+        vm.prank(BOB);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 1, Side.SELL, noAsk, qty, 0);
+
+        // Should NOT revert even though YES collateral (3e18) is close to feeTotal (1.6e18)
+        vm.prank(OPERATOR);
+        uint256 fillCount = MatchingFacet(address(diamond)).matchOrders(marketId, 10);
+        assertEq(fillCount, 1, "should fill");
+
+        // ALICE (maker) gets full yesCollateral
+        assertEq(collateral.balanceOf(ALICE), _collateral(yesAsk, qty), "ALICE (maker) gets full payout");
+    }
+
+    // =========================================================================
+    // Maker/Taker alternation: same order fills as taker then maker
+    // =========================================================================
+
+    function test_makerTakerAlternation_sameOrderSwitchesRole() public {
+        uint256 qty = 50e18;
+
+        // Step 1: BOB places SELL 50 at tick=55 (orderId=1)
+        _splitForUser(BOB, qty);
+        vm.prank(BOB);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, 55, qty, 0);
+
+        // Step 2: ALICE places BUY 150 at tick=65 (orderId=2) — crosses with BOB
+        uint256 aliceCol = _collateral(65, 150e18);
+        _mintAndApprove(ALICE, aliceCol);
+        vm.prank(ALICE);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, 65, 150e18, 0);
+
+        // Fill 1: ALICE (ID=2) is TAKER (2 > 1). BOB (maker) gets full 55c/token.
+        uint256 bobBefore = collateral.balanceOf(BOB);
+        vm.prank(OPERATOR);
+        uint256 fill1 = MatchingFacet(address(diamond)).matchOrders(marketId, 1);
+        assertEq(fill1, 1, "fill 1 executed");
+
+        // BOB (maker) should get full collateral at ask price
+        uint256 bobReceived = collateral.balanceOf(BOB) - bobBefore;
+        assertEq(bobReceived, _collateral(55, qty), "BOB (maker) gets full 55c/token");
+
+        // ALICE got ~50 tokens (maybe slightly fewer due to affordable reduction)
+        // But bid(65) >> ask(55), so no reduction needed
+        assertEq(ctf.balanceOf(ALICE, positionIds[0]), qty, "ALICE received 50 tokens");
+
+        // ALICE's order should have ~100 remaining
+        Order memory aliceOrder = LimitOrdersFacet(address(diamond)).getOrder(2);
+        assertEq(aliceOrder.qty, 100e18, "ALICE has 100 remaining");
+
+        // Step 3: CAROL places SELL 50 at tick=58 (orderId=3) — crosses with ALICE
+        _splitForUser(CAROL, qty);
+        vm.prank(CAROL);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, 58, qty, 0);
+
+        // Fill 2: ALICE (ID=2) is MAKER (2 < 3). CAROL (taker) pays fees.
+        uint256 carolBefore = collateral.balanceOf(CAROL);
+        uint256 aliceTokensBefore = ctf.balanceOf(ALICE, positionIds[0]);
+        uint256 aliceColBefore = collateral.balanceOf(ALICE);
+
+        vm.prank(OPERATOR);
+        uint256 fill2 = MatchingFacet(address(diamond)).matchOrders(marketId, 1);
+        assertEq(fill2, 1, "fill 2 executed");
+
+        // ALICE (maker) gets full 50 tokens
+        assertEq(ctf.balanceOf(ALICE, positionIds[0]) - aliceTokensBefore, qty, "ALICE received 50 tokens (maker, fill 2)");
+
+        // ALICE (maker) gets full surplus refund (65-58)*50*tickSize (no fee deduction)
+        uint256 expectedSurplus = _collateral(65 - 58, qty);
+        assertEq(collateral.balanceOf(ALICE) - aliceColBefore, expectedSurplus, "ALICE got full surplus (0% maker fee)");
+
+        // CAROL (taker) pays fees from her proceeds
+        uint256 carolCol = _collateral(58, qty);
+        uint256 carolExpectedFee = (carolCol * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 carolReceived = collateral.balanceOf(CAROL) - carolBefore;
+        assertEq(carolReceived, carolCol - carolExpectedFee, "CAROL (taker) paid fees");
+
+        // Step 4: DAVE places SELL 50 at tick=60 (orderId=4) — crosses with ALICE
+        _splitForUser(DAVE, qty);
+        vm.prank(DAVE);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, 60, qty, 0);
+
+        // Fill 3: ALICE (ID=2) is MAKER again (2 < 4). DAVE (taker) pays fees.
+        uint256 daveBefore = collateral.balanceOf(DAVE);
+        aliceTokensBefore = ctf.balanceOf(ALICE, positionIds[0]);
+        aliceColBefore = collateral.balanceOf(ALICE);
+
+        vm.prank(OPERATOR);
+        uint256 fill3 = MatchingFacet(address(diamond)).matchOrders(marketId, 1);
+        assertEq(fill3, 1, "fill 3 executed");
+
+        // ALICE (maker) gets full 50 tokens + surplus
+        assertEq(ctf.balanceOf(ALICE, positionIds[0]) - aliceTokensBefore, qty, "ALICE received 50 tokens (maker, fill 3)");
+        uint256 expectedSurplus3 = _collateral(65 - 60, qty);
+        assertEq(collateral.balanceOf(ALICE) - aliceColBefore, expectedSurplus3, "ALICE got full surplus (0% maker fee, fill 3)");
+
+        // DAVE (taker) pays fees
+        uint256 daveCol = _collateral(60, qty);
+        uint256 daveExpectedFee = (daveCol * TOTAL_FEE_BPS) / BPS_DENOMINATOR;
+        assertEq(collateral.balanceOf(DAVE) - daveBefore, daveCol - daveExpectedFee, "DAVE (taker) paid fees");
+    }
+
+    function test_makerTakerAlternation_takerThenMaker_feesCorrect() public {
+        // Simpler variant: buyer starts as taker (high fee hit), then becomes maker (0% fee)
+        uint256 qty = 100e18;
+
+        // Step 1: BOB SELL 50 at tick=60 (orderId=1)
+        _splitForUser(BOB, 50e18);
+        vm.prank(BOB);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, 60, 50e18, 0);
+
+        // Step 2: ALICE BUY 100 at tick=60 (orderId=2) — buyer-taker, bid==ask
+        uint256 aliceCol = _collateral(60, qty);
+        _mintAndApprove(ALICE, aliceCol);
+        vm.prank(ALICE);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, 60, qty, 0);
+
+        // Fill 1: ALICE taker (2 > 1), bid==ask → reduced fill + auto-cancel remainder
+        vm.prank(OPERATOR);
+        MatchingFacet(address(diamond)).matchOrders(marketId, 10);
+
+        // ALICE's order should be auto-cancelled (bid==ask, remainder underfunded)
+        Order memory aliceOrder = LimitOrdersFacet(address(diamond)).getOrder(2);
+        assertEq(aliceOrder.id, 0, "ALICE order auto-cancelled after buyer-taker fill at bid==ask");
+
+        // ALICE got tokens (fewer than 50 due to fee)
+        uint256 aliceTokens = ctf.balanceOf(ALICE, positionIds[0]);
+        assertGt(aliceTokens, 0, "ALICE got some tokens");
+        assertLt(aliceTokens, 50e18, "ALICE got fewer than 50 (fee-reduced fill)");
     }
 
     // =========================================================================

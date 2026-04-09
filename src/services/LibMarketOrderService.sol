@@ -86,9 +86,12 @@ library LibMarketOrderService {
             Order storage sellOrder = LibOrderStorage.getOrder(headOrderId);
             if (sellOrder.id == 0) break;
 
-            // Calculate fill quantity
+            // Calculate fill quantity (fee-aware: buyer must afford cost + fee)
             uint256 pricePerToken = bestAsk * md.tickSize;
-            uint256 affordableQty = (remaining * 1e18) / pricePerToken;
+            MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
+            uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
+            uint256 affordableQty = (remaining * 1e18 * LibFeeCalculatorService.BPS_DENOMINATOR)
+                / (pricePerToken * (LibFeeCalculatorService.BPS_DENOMINATOR + totalFeeBps));
             uint256 fillQty = affordableQty < sellOrder.qty ? affordableQty : sellOrder.qty;
             if (fillQty == 0) break;
 
@@ -97,7 +100,6 @@ library LibMarketOrderService {
             if (cost == 0) break;
 
             // Fee calculation
-            MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
             FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(cost, fees);
 
             // Settlement: seller (maker) gets full cost, buyer (taker) pays fees from remaining
