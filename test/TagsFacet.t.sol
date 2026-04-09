@@ -41,7 +41,7 @@ contract TagsFacetTest is Test, DiamondSetup {
         bytes32[] tags
     );
     event MarketGroupCreated(
-        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags
+        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags, uint256 reward
     );
     event MarketTagsUpdated(uint256 indexed marketId, bytes32[] tags);
     event MarketGroupTagsUpdated(uint256 indexed groupId, bytes32[] tags);
@@ -143,7 +143,7 @@ contract TagsFacetTest is Test, DiamondSetup {
 
         vm.prank(CREATOR);
         vm.expectEmit(true, true, true, false);
-        emit MarketGroupCreated(1, venueId, CREATOR, "Who will win?", block.timestamp, tags);
+        emit MarketGroupCreated(1, venueId, CREATOR, "Who will win?", block.timestamp, tags, 0);
         MarketGroupFacet(address(diamond)).createMarketGroup(
             venueId, "Who will win?", "Resolution criteria", address(collateral), TICK_SIZE, 0, 0, tags
         );

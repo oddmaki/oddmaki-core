@@ -69,6 +69,8 @@ contract VenueFacet is ReentrancyGuard {
             umaMinBond
         );
         emit VenueCreated(venueId, msg.sender, name, metadata);
+        emit VenueFeesUpdated(venueId, venueFeeBps, creatorFeeBps);
+        emit VenueOracleParamsUpdated(venueId, umaRewardAmount, umaMinBond);
         emit VenueAccessControlUpdated(venueId, tradingAccessControl, creationAccessControl);
     }
 

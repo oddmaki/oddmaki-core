@@ -26,7 +26,7 @@ contract MarketGroupFacetTest is Test, DiamondSetup {
 
     // Event declarations for expectEmit
     event MarketGroupCreated(
-        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags
+        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags, uint256 reward
     );
     event MarketAddedToGroup(uint256 indexed groupId, uint256 indexed marketId, string marketName, string marketQuestion);
     event PlaceholderMarketsAdded(uint256 indexed groupId, uint256[] marketIds, uint256 count);
@@ -96,7 +96,7 @@ contract MarketGroupFacetTest is Test, DiamondSetup {
     function test_createMarketGroup_emitsEvent() public {
         vm.prank(CREATOR);
         vm.expectEmit(true, true, true, true);
-        emit MarketGroupCreated(1, venueId, CREATOR, "Who will win?", block.timestamp, new bytes32[](0));
+        emit MarketGroupCreated(1, venueId, CREATOR, "Who will win?", block.timestamp, new bytes32[](0), 0);
         MarketGroupFacet(address(diamond)).createMarketGroup(
             venueId, "Who will win?", "Resolution criteria", address(collateral), TICK_SIZE, 0, 0, new bytes32[](0)
         );

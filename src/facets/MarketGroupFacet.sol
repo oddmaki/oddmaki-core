@@ -27,7 +27,7 @@ import {MarketGroupData, MarketGroupItem, MarketStatus} from "../interfaces/Type
 contract MarketGroupFacet is ReentrancyGuard {
     // ---- Events ----
     event MarketGroupCreated(
-        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags
+        uint256 indexed groupId, uint256 indexed venueId, address indexed creator, string question, uint256 timestamp, bytes32[] tags, uint256 reward
     );
     event MarketGroupActivated(uint256 indexed groupId, uint256 marketCount, uint256 timestamp);
 
@@ -72,7 +72,7 @@ contract MarketGroupFacet is ReentrancyGuard {
             msg.sender, venueId, question, description, collateralToken, tickSize, additionalReward, liveness, reward
         );
 
-        emit MarketGroupCreated(groupId, venueId, msg.sender, question, block.timestamp, tags);
+        emit MarketGroupCreated(groupId, venueId, msg.sender, question, block.timestamp, tags, reward);
     }
 
     /**
