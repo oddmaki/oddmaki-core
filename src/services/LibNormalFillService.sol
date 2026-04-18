@@ -150,13 +150,26 @@ library LibNormalFillService {
                 // Underfunded when: bestBid * BPS < bestAsk * (BPS + totalFeeBps)
                 uint256 bps = LibFeeCalculatorService.BPS_DENOMINATOR;
                 if (bestBid * bps < bestAsk * (bps + totalFeeBps)) {
+                    // Refund the untouched escrow for the portion that was never attempted
+                    // in this fill. The buyer deposited (qty_initial * bestBid * tickSize / 1e18)
+                    // at placement. The buyerRefund above already released the baseQty
+                    // slice, so what remains in the vault for this order is
+                    // (qty_initial - baseQty) * bestBid * tickSize / 1e18, where
+                    // qty_initial = newBuyQty + qty.
+                    uint256 unattempted = newBuyQty + qty - baseQty;
+                    uint256 refund = (unattempted * bestBid * md.tickSize) / 1e18;
+                    if (refund > 0) {
+                        LibVaultCollateralService.transferCollateral(
+                            address(md.collateralToken), buyOrder.owner, refund
+                        );
+                    }
                     // Zero out qty before dequeue so removeOrderFromLevel subtracts 0 from totalQty
                     // (totalQty was already decremented by recordFillOnBook above for the fill portion,
                     //  and reduceOrderQty left newBuyQty in order.qty which we now zero)
                     LibOrderAggregate.reduceOrderQty(buyHead, newBuyQty);
                     LibOrderBookService.dequeueOrder(buyHead);
                     LibOrderAggregate.deleteOrder(buyHead);
-                    emit OrderAutoCancelled(buyHead, 0);
+                    emit OrderAutoCancelled(buyHead, refund);
                 }
             }
 
