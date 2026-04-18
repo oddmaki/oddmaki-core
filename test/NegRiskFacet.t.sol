@@ -14,6 +14,8 @@ import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
 import {ReentrancyAttacker} from "./helpers/ReentrancyAttacker.sol";
+import {WrappedCollateralToken} from "../src/tokens/WrappedCollateralToken.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
 /**
  * @title NegRiskFacet integration tests
@@ -106,5 +108,79 @@ contract NegRiskFacetTest is Test, DiamondSetup {
 
         // Assert: reentrancy was blocked by the nonReentrant modifier
         assertTrue(attacker.reentrancyBlocked(), "reentrancy should be blocked by nonReentrant");
+    }
+
+    // =========================================================================
+    // C-02 Audit Fix: convertPositions must reject attacker-controlled CTF conditions
+    // =========================================================================
+    //
+    // Exploit: Gnosis CTF.prepareCondition is permissionless. Without validation, an
+    // attacker can prepare a condition with themselves as oracle, mint fake YES/NO
+    // tokens against the group's WCT, and call convertPositions to drain the
+    // wrapped-collateral reserve. This test verifies the conversion path rejects
+    // any conditionId that was not registered as a neg-risk market by the Diamond.
+
+    function test_convertPositions_rejectsAttackerControlledConditionIds() public {
+        address wrapped = _getWrappedCollateral();
+        require(wrapped != address(0), "wrapped collateral not registered");
+
+        // Simulate legitimate prior usage: real users have wrapped $10k into the WCT reserve.
+        collateral.mint(wrapped, 10_000e6);
+
+        address attacker = makeAddr("attacker");
+
+        // Attacker prepares 3 CTF conditions with themselves as oracle.
+        // conditionIds[0] → yields complementary YES (mint path); [1], [2] → NOs to burn.
+        uint256 numFakes = 3;
+        bytes32[] memory fakeConditionIds = new bytes32[](numFakes);
+        for (uint256 i = 0; i < numFakes; i++) {
+            bytes32 qid = keccak256(abi.encode("attacker question", i));
+            fakeConditionIds[i] = ctf.getConditionId(attacker, qid, 2);
+            vm.prank(attacker);
+            ctf.prepareCondition(attacker, qid, 2);
+        }
+
+        uint256 amount = 100e6;
+        // indexSet 0b110: bits 1,2 set → 2 NO inputs; bit 0 unset → 1 YES output.
+        // Engages the release path (noCount=2 > 1) while still exercising mint + split.
+        uint256 indexSet = 6;
+
+        // Attacker wraps USDC → WCT; splits WCT into fake NO tokens they need to supply.
+        uint256 wrapAmount = 2 * amount; // need NOs for 2 fake conditions
+        collateral.mint(attacker, wrapAmount);
+        vm.startPrank(attacker);
+        collateral.approve(wrapped, wrapAmount);
+        WrappedCollateralToken(wrapped).wrap(attacker, wrapAmount);
+
+        WrappedCollateralToken(wrapped).approve(address(ctf), wrapAmount);
+        uint256[] memory partition = new uint256[](2);
+        partition[0] = 1;
+        partition[1] = 2;
+        for (uint256 i = 1; i < numFakes; i++) {
+            ctf.splitPosition(IERC20(wrapped), bytes32(0), fakeConditionIds[i], partition, amount);
+        }
+
+        ctf.setApprovalForAll(address(diamond), true);
+
+        uint256 reserveAfterWrap = collateral.balanceOf(wrapped); // baseline after wrap, pre-attack
+        uint256 attackerUsdcAfterWrap = collateral.balanceOf(attacker);
+
+        // After fix: must revert — fake conditionIds are not registered as neg-risk conditions.
+        // Before fix: call succeeds and release() pays (2-1)*amount USDC to attacker.
+        vm.expectRevert();
+        NegRiskFacet(address(diamond)).convertPositions(fakeConditionIds, address(collateral), indexSet, amount);
+        vm.stopPrank();
+
+        // Reserve must be unchanged, attacker must not have received any collateral.
+        assertEq(
+            collateral.balanceOf(wrapped),
+            reserveAfterWrap,
+            "WCT reserve drained by attacker-controlled conditionIds"
+        );
+        assertEq(
+            collateral.balanceOf(attacker),
+            attackerUsdcAfterWrap,
+            "attacker received USDC from release() via fake conditions"
+        );
     }
 }
