@@ -24,11 +24,23 @@ contract PriceMarketFacet {
             int64 finalPrice,
             uint256 resolutionWindow,
             bool resolved,
-            int64 strikePrice
+            int64 strikePrice,
+            uint256 openPriceTime
         )
     {
         PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
-        return (pm.feedId, pm.feedProvider, pm.openTime, pm.closeTime, pm.priceExpo, pm.finalPrice, pm.resolutionWindow, pm.resolved, pm.strikePrice);
+        return (
+            pm.feedId,
+            pm.feedProvider,
+            pm.openTime,
+            pm.closeTime,
+            pm.priceExpo,
+            pm.finalPrice,
+            pm.resolutionWindow,
+            pm.resolved,
+            pm.strikePrice,
+            pm.openPriceTime
+        );
     }
 
     function isPriceMarket(uint256 marketId) external view returns (bool) {

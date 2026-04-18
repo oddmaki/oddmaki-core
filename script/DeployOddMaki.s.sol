@@ -461,11 +461,13 @@ contract DeployOddMakiScript is Script {
         cuts[18] = _cut(address(priceMarketFacet), priceMarketSelectors);
 
         // 19: PythResolutionFacet (Pyth-specific admin + creation + resolution)
-        bytes4[] memory pythResolutionSelectors = new bytes4[](4);
+        bytes4[] memory pythResolutionSelectors = new bytes4[](6);
         pythResolutionSelectors[0] = PythResolutionFacet.setPythContract.selector;
         pythResolutionSelectors[1] = PythResolutionFacet.getPythContract.selector;
         pythResolutionSelectors[2] = PythResolutionFacet.createPriceMarketPyth.selector;
         pythResolutionSelectors[3] = PythResolutionFacet.resolvePriceMarketPyth.selector;
+        pythResolutionSelectors[4] = PythResolutionFacet.setOpenMaxStaleness.selector;
+        pythResolutionSelectors[5] = PythResolutionFacet.getOpenMaxStaleness.selector;
         cuts[19] = _cut(address(pythResolutionFacet), pythResolutionSelectors);
 
         // 20: BatchOrdersFacet
