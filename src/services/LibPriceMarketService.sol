@@ -60,4 +60,41 @@ library LibPriceMarketService {
             if (!ok) revert LibPriceMarketValidator.ETHRefundFailed();
         }
     }
+
+    /// @notice Parse each submitted VAA individually and return the price whose
+    ///         publishTime is the smallest value in `[closeTime, closeTime + window]`.
+    ///         Selecting the earliest in-range VAA prevents resolvers from biasing the
+    ///         chosen price by reordering `pythUpdateData`.
+    ///         Reverts if no submitted VAA falls in range (propagated from Pyth).
+    function pickEarliestClosePrice(
+        bytes32 pythFeedId,
+        bytes[] calldata pythUpdateData,
+        uint256 closeTime,
+        uint256 window
+    ) internal returns (int64 finalPrice) {
+        if (pythUpdateData.length == 0) revert LibPriceMarketValidator.NoValidPriceUpdate();
+
+        address pythContract = LibPriceMarketStorage.getPythContract();
+        IPyth pyth = IPyth(pythContract);
+
+        bytes32[] memory feedIds = new bytes32[](1);
+        feedIds[0] = pythFeedId;
+        uint64 minPT = uint64(closeTime);
+        uint64 maxPT = uint64(closeTime + window);
+
+        uint64 earliestPublishTime = type(uint64).max;
+        bytes[] memory single = new bytes[](1);
+
+        for (uint256 i = 0; i < pythUpdateData.length; i++) {
+            single[0] = pythUpdateData[i];
+            uint256 singleFee = pyth.getUpdateFee(single);
+            PythStructs.PriceFeed[] memory feeds =
+                pyth.parsePriceFeedUpdates{value: singleFee}(single, feedIds, minPT, maxPT);
+            uint64 pt = uint64(feeds[0].price.publishTime);
+            if (pt < earliestPublishTime) {
+                earliestPublishTime = pt;
+                finalPrice = feeds[0].price.price;
+            }
+        }
+    }
 }
