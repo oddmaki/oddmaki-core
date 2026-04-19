@@ -18,6 +18,8 @@ forge test -vvvv         # Max verbosity (includes traces)
 
 **DO NOT run `forge fmt`.** The project requires `via_ir = true` (MarketsFacet has stack-too-deep without it), and `forge fmt` causes the Yul IR optimizer to produce pathological bytecode that OOGs at runtime. All tests fail after formatting.
 
+**PR prerequisites — run synchronously, not in the background.** Before opening a pull request, always run `forge build` and `forge test` to completion and confirm both pass. A clean local build is the only way to catch Yul IR edge cases (e.g. `stack-too-deep`) that surface only when the full project compiles together; CI will otherwise fail on the PR. Do not rely on a partial/background build — wait for the output.
+
 Deployment (local Anvil):
 ```bash
 forge script script/DeployOddMaki.s.sol --fork-url http://localhost:8545 --broadcast

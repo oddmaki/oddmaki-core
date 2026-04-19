@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
-import {PriceMarket, FeedProvider} from "../interfaces/Types.sol";
+import {PriceMarket} from "../interfaces/Types.sol";
 
 /**
  * @title PriceMarketFacet
@@ -12,35 +12,8 @@ import {PriceMarket, FeedProvider} from "../interfaces/Types.sol";
  *         (e.g., PythResolutionFacet, future ChainlinkResolutionFacet).
  */
 contract PriceMarketFacet {
-    function getPriceMarket(uint256 marketId)
-        external
-        view
-        returns (
-            bytes32 feedId,
-            FeedProvider feedProvider,
-            uint256 openTime,
-            uint256 closeTime,
-            int32 priceExpo,
-            int64 finalPrice,
-            uint256 resolutionWindow,
-            bool resolved,
-            int64 strikePrice,
-            uint256 openPriceTime
-        )
-    {
-        PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
-        return (
-            pm.feedId,
-            pm.feedProvider,
-            pm.openTime,
-            pm.closeTime,
-            pm.priceExpo,
-            pm.finalPrice,
-            pm.resolutionWindow,
-            pm.resolved,
-            pm.strikePrice,
-            pm.openPriceTime
-        );
+    function getPriceMarket(uint256 marketId) external view returns (PriceMarket memory) {
+        return LibPriceMarketStorage.getPriceMarket(marketId);
     }
 
     function isPriceMarket(uint256 marketId) external view returns (bool) {

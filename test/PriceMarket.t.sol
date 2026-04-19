@@ -10,7 +10,7 @@ import {ProtocolFacet} from "../src/facets/ProtocolFacet.sol";
 import {PriceMarketFacet} from "../src/facets/PriceMarketFacet.sol";
 import {PythResolutionFacet} from "../src/facets/PythResolutionFacet.sol";
 import {LibPriceMarketValidator} from "../src/validators/LibPriceMarketValidator.sol";
-import {MarketRegistryData, MarketTradingData, MarketOracleData, MarketStatus, FeedProvider} from "../src/interfaces/Types.sol";
+import {MarketRegistryData, MarketTradingData, MarketOracleData, MarketStatus, FeedProvider, PriceMarket} from "../src/interfaces/Types.sol";
 import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
@@ -157,7 +157,7 @@ contract PriceMarketTest is Test, DiamondSetup {
     }
 
     function _resolvePriceMarket(uint256 marketId, int64 closePrice) internal {
-        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        uint256 closeTime = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).closeTime;
         bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, closePrice, uint64(closeTime));
 
         vm.prank(RESOLVER);
@@ -172,29 +172,18 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createPriceMarket(OPEN_PRICE);
 
         // Verify price market overlay
-        (
-            bytes32 feedId,
-            FeedProvider feedProvider,
-            uint256 openTime,
-            uint256 closeTime,
-            int32 priceExpo,
-            int64 finalPrice,
-            uint256 resolutionWindow,
-            bool resolved,
-            int64 strikePrice,
-            uint256 openPriceTime
-        ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
 
-        assertEq(feedId, ETH_USD_FEED);
-        assertEq(uint8(feedProvider), uint8(FeedProvider.PYTH));
-        assertEq(openTime, block.timestamp);
-        assertEq(closeTime, block.timestamp + DURATION);
-        assertEq(priceExpo, PRICE_EXPO);
-        assertEq(finalPrice, int64(0));
-        assertEq(resolutionWindow, 60); // default
-        assertFalse(resolved);
-        assertEq(strikePrice, OPEN_PRICE); // Up/Down: strikePrice == captured open price
-        assertEq(openPriceTime, block.timestamp); // VAA publishTime captured
+        assertEq(pm.feedId, ETH_USD_FEED);
+        assertEq(uint8(pm.feedProvider), uint8(FeedProvider.PYTH));
+        assertEq(pm.openTime, block.timestamp);
+        assertEq(pm.closeTime, block.timestamp + DURATION);
+        assertEq(pm.priceExpo, PRICE_EXPO);
+        assertEq(pm.finalPrice, int64(0));
+        assertEq(pm.resolutionWindow, 60); // default
+        assertFalse(pm.resolved);
+        assertEq(pm.strikePrice, OPEN_PRICE); // Up/Down: strikePrice == captured open price
+        assertEq(pm.openPriceTime, block.timestamp); // VAA publishTime captured
 
         // Verify standard market was created
         assertTrue(PriceMarketFacet(address(diamond)).isPriceMarket(marketId));
@@ -236,7 +225,7 @@ contract PriceMarketTest is Test, DiamondSetup {
             pythData
         );
 
-        (, , , , , , uint256 resolutionWindow, , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        uint256 resolutionWindow = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).resolutionWindow;
         assertEq(resolutionWindow, 120);
     }
 
@@ -351,7 +340,9 @@ contract PriceMarketTest is Test, DiamondSetup {
         _resolvePriceMarket(marketId, closePrice);
 
         // Verify price market resolved
-        (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm0 = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        int64 finalPrice = pm0.finalPrice;
+        bool resolved = pm0.resolved;
         assertTrue(resolved);
         assertEq(finalPrice, closePrice);
 
@@ -369,7 +360,9 @@ contract PriceMarketTest is Test, DiamondSetup {
         int64 closePrice = OPEN_PRICE - 100000000; // -$1
         _resolvePriceMarket(marketId, closePrice);
 
-        (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm0 = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        int64 finalPrice = pm0.finalPrice;
+        bool resolved = pm0.resolved;
         assertTrue(resolved);
         assertEq(finalPrice, closePrice);
     }
@@ -384,7 +377,7 @@ contract PriceMarketTest is Test, DiamondSetup {
 
         _resolvePriceMarket(marketId, OPEN_PRICE);
 
-        (, , , , , , , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        bool resolved = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).resolved;
         assertTrue(resolved);
     }
 
@@ -403,7 +396,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createPriceMarket(OPEN_PRICE);
         vm.warp(block.timestamp + DURATION);
 
-        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        uint256 closeTime = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).closeTime;
         bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, OPEN_PRICE + 1, uint64(closeTime));
 
         uint256 balBefore = RESOLVER.balance;
@@ -431,7 +424,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         _resolvePriceMarket(marketId, OPEN_PRICE + 1);
 
         // Try to resolve again
-        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        uint256 closeTime = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).closeTime;
         bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, OPEN_PRICE + 1, uint64(closeTime));
 
         vm.expectRevert(LibPriceMarketValidator.PriceMarketAlreadyResolved.selector);
@@ -484,29 +477,18 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createStrikeMarket(STRIKE_PRICE, closeTime);
 
         // Verify price market overlay
-        (
-            bytes32 feedId,
-            FeedProvider feedProvider,
-            uint256 openTime,
-            uint256 ct,
-            int32 priceExpo,
-            int64 finalPrice,
-            uint256 resolutionWindow,
-            bool resolved,
-            int64 strikePrice,
-            uint256 openPriceTime
-        ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
 
-        assertEq(feedId, ETH_USD_FEED);
-        assertEq(uint8(feedProvider), uint8(FeedProvider.PYTH));
-        assertEq(openTime, block.timestamp);
-        assertEq(ct, closeTime);
-        assertEq(priceExpo, PRICE_EXPO);
-        assertEq(finalPrice, int64(0));
-        assertEq(resolutionWindow, 60);
-        assertFalse(resolved);
-        assertEq(strikePrice, STRIKE_PRICE); // Explicit strike price stored
-        assertEq(openPriceTime, 0); // Strike markets don't capture an opening price
+        assertEq(pm.feedId, ETH_USD_FEED);
+        assertEq(uint8(pm.feedProvider), uint8(FeedProvider.PYTH));
+        assertEq(pm.openTime, block.timestamp);
+        assertEq(pm.closeTime, closeTime);
+        assertEq(pm.priceExpo, PRICE_EXPO);
+        assertEq(pm.finalPrice, int64(0));
+        assertEq(pm.resolutionWindow, 60);
+        assertFalse(pm.resolved);
+        assertEq(pm.strikePrice, STRIKE_PRICE); // Explicit strike price stored
+        assertEq(pm.openPriceTime, 0); // Strike markets don't capture an opening price
 
         // Verify standard market was created
         assertTrue(PriceMarketFacet(address(diamond)).isPriceMarket(marketId));
@@ -594,7 +576,9 @@ contract PriceMarketTest is Test, DiamondSetup {
 
         _resolvePriceMarket(marketId, closePrice);
 
-        (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm0 = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        int64 finalPrice = pm0.finalPrice;
+        bool resolved = pm0.resolved;
         assertTrue(resolved);
         assertEq(finalPrice, closePrice);
     }
@@ -613,7 +597,9 @@ contract PriceMarketTest is Test, DiamondSetup {
 
         _resolvePriceMarket(marketId, closePrice);
 
-        (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        PriceMarket memory pm0 = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        int64 finalPrice = pm0.finalPrice;
+        bool resolved = pm0.resolved;
         assertTrue(resolved);
         assertEq(finalPrice, closePrice);
     }
@@ -630,7 +616,7 @@ contract PriceMarketTest is Test, DiamondSetup {
 
         _resolvePriceMarket(marketId, STRIKE_PRICE);
 
-        (, , , , , , , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        bool resolved = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).resolved;
         assertTrue(resolved);
     }
 
@@ -639,7 +625,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createPriceMarket(OPEN_PRICE);
 
         // Verify strikePrice == OPEN_PRICE (auto-set from captured Pyth price)
-        (, , , , , , , , int64 strikePrice, ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        int64 strikePrice = PriceMarketFacet(address(diamond)).getPriceMarket(marketId).strikePrice;
         assertEq(strikePrice, OPEN_PRICE);
 
         vm.warp(block.timestamp + DURATION);
@@ -748,10 +734,9 @@ contract PriceMarketTest is Test, DiamondSetup {
             "q:title:Test,description:Test", 0, new bytes32[](0), 0, pythData
         );
 
-        (, , , , , , , , int64 strikePrice, uint256 openPriceTime) =
-            PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
-        assertEq(strikePrice, OPEN_PRICE);
-        assertEq(openPriceTime, uint256(freshPublishTime));
+        PriceMarket memory pm = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertEq(pm.strikePrice, OPEN_PRICE);
+        assertEq(pm.openPriceTime, uint256(freshPublishTime));
     }
 
     function test_createPriceMarketPyth_revertsFutureVaaBeyondSkew() public {
