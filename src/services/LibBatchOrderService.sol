@@ -6,6 +6,7 @@ import {LibOrderBookService} from "./LibOrderBookService.sol";
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibVaultCollateralService} from "./LibVaultCollateralService.sol";
 import {LibVaultOutcomeTokenService} from "./LibVaultOutcomeTokenService.sol";
+import {LibErc1155ReceiverValidator} from "../validators/LibErc1155ReceiverValidator.sol";
 import {MarketTradingData, Order, Side} from "../interfaces/Types.sol";
 import {BatchOrderParams} from "../interfaces/IBatchOrders.sol";
 
@@ -56,6 +57,10 @@ library LibBatchOrderService {
         // Phase 2: Aggregated transfers (max 3 instead of N)
         if (totalBuyCollateral > 0) {
             LibVaultCollateralService.depositCollateral(address(config.collateralToken), user, totalBuyCollateral);
+        }
+        if (totalSellYes > 0 || totalSellNo > 0) {
+            // H-05: reject contract makers that cannot receive refunded outcome tokens.
+            LibErc1155ReceiverValidator.requireCanReceiveErc1155(user);
         }
         if (totalSellYes > 0) {
             LibVaultOutcomeTokenService.depositOutcomeTokens(config.positionIds[0], user, totalSellYes);

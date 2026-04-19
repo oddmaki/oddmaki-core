@@ -58,6 +58,16 @@ library LibResolutionValidator {
         if (reg.status != MarketStatus.Active) revert MarketNotActive();
     }
 
+    /// @notice Require the market linked to `questionId` to be in Active status.
+    ///         Used by the UMA resolution entry points to block re-resolution once
+    ///         another resolution path (e.g. Pyth) has already finalised the market.
+    function requireActiveMarketByQuestionId(bytes32 questionId) internal view {
+        uint256 marketId = LibMarketRegistryStorage.getMarketIdByQuestionId(questionId);
+        if (marketId == 0) revert MarketNotFound();
+        MarketRegistryData storage reg = LibMarketRegistryStorage.getMarketRegistryData(marketId);
+        if (reg.status != MarketStatus.Active) revert MarketNotActive();
+    }
+
     function requireUmaOracle(address caller) internal view {
         if (caller != LibProtocolStorage.getUmaOracle()) revert OnlyUmaOracle();
     }

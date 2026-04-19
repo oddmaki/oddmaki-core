@@ -46,6 +46,9 @@ contract ResolutionFacet is ReentrancyGuard, OptimisticOracleV3CallbackRecipient
     {
         LibResolutionValidator.requireUmaOracleConfigured();
         LibResolutionValidator.requireOracleInitialized(questionId);
+        // H-03: block UMA assertion once the linked market is already Resolved
+        //       (e.g. Pyth settled first). Must precede any bond transfer.
+        LibResolutionValidator.requireActiveMarketByQuestionId(questionId);
         LibResolutionValidator.requireNoActiveAssertion(questionId);
 
         MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(questionId);
@@ -89,6 +92,11 @@ contract ResolutionFacet is ReentrancyGuard, OptimisticOracleV3CallbackRecipient
     /// @dev No nonReentrant — UMA's settleAssertion triggers assertionResolvedCallback on Diamond.
     function settleAssertion(bytes32 assertionId) external {
         LibResolutionValidator.requireAssertionExists(assertionId);
+
+        // H-03: block UMA settlement if the linked market has already resolved via another path.
+        // Settling here would pay the UMA proposer bond while settlement is already finalised.
+        AssertionData storage assertion = LibResolutionStorage.getAssertionData(assertionId);
+        LibResolutionValidator.requireActiveMarketByQuestionId(assertion.questionId);
 
         address umaOracle = LibProtocolStorage.getUmaOracle();
         OptimisticOracleV3Interface(umaOracle).settleAssertion(assertionId);

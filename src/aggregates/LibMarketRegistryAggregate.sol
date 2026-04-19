@@ -41,19 +41,32 @@ library LibMarketRegistryAggregate {
             tickSize: tickSize,
             venueFeeBps: 0,
             creatorFeeBps: 0,
-            protocolFeeBps: 0
+            protocolFeeBps: 0,
+            protocolFeeRecipient: address(0),
+            venueFeeRecipient: address(0)
         });
         s.byMarketId[marketId] = data;
         s.marketIdByQuestionId[questionId] = marketId;
         return data;
     }
 
-    /// @notice Snapshot fee BPS onto market registry (immutable per market).
-    function setFeeSnapshot(uint256 marketId, uint256 venueFeeBps, uint256 creatorFeeBps, uint256 protocolFeeBps) internal {
+    /// @notice Snapshot fee BPS and recipient addresses onto market registry (immutable per market).
+    ///         Recipients are captured so that later mutation of venue.feeRecipient or protocolTreasury
+    ///         cannot redirect fees that resting orders were placed against.
+    function setFeeSnapshot(
+        uint256 marketId,
+        uint256 venueFeeBps,
+        uint256 creatorFeeBps,
+        uint256 protocolFeeBps,
+        address protocolFeeRecipient,
+        address venueFeeRecipient
+    ) internal {
         MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
         registry.venueFeeBps = venueFeeBps;
         registry.creatorFeeBps = creatorFeeBps;
         registry.protocolFeeBps = protocolFeeBps;
+        registry.protocolFeeRecipient = protocolFeeRecipient;
+        registry.venueFeeRecipient = venueFeeRecipient;
     }
 
     function setStatus(uint256 marketId, MarketStatus status) internal {
