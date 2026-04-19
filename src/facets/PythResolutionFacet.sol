@@ -132,7 +132,26 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 3. Collect market creation fee
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
 
-        // 4. Create standard market via shared service
+        // 4. Get price data based on market type
+        int64 effectiveStrike;
+        int32 priceExpo;
+        uint256 pythFee;
+        uint256 openPriceTime;
+
+        if (strikePrice > 0) {
+            // Strike market: explicit target price, only need priceExpo from feed (no update, no fee)
+            priceExpo = LibPriceMarketService.getFeedExponent(pythFeedId);
+            effectiveStrike = strikePrice;
+            pythFee = 0;
+        } else {
+            // Up/Down market: capture the opening price from the submitted VAA.
+            int64 openPrice;
+            (openPrice, priceExpo, pythFee, openPriceTime) =
+                LibPriceMarketService.captureOpenPrice(pythFeedId, pythUpdateData, msg.value);
+            effectiveStrike = openPrice;
+        }
+
+        // 5. Create standard market via shared service
         marketId = LibMarketCreationService.createMarket(
             msg.sender,
             venueId,
@@ -147,64 +166,26 @@ contract PythResolutionFacet is ReentrancyGuard {
             tags
         );
 
-        // 5. Populate price-market overlay + refund. Delegating to a helper keeps
-        //    `createPriceMarketPyth` within Yul's stack depth limits under via_ir.
-        (int64 effectiveStrike, uint256 effectiveWindow) = _initPriceMarketOverlay(
-            marketId, pythFeedId, strikePrice, closeTime, resolutionWindow, pythUpdateData
-        );
+        // 6. Store price market overlay
+        uint256 effectiveWindow =
+            resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
 
-        emit PriceMarketCreatedPyth(
-            marketId,
-            venueId,
-            pythFeedId,
-            effectiveStrike,
-            LibPriceMarketStorage.getPriceMarket(marketId).priceExpo,
-            block.timestamp,
-            closeTime,
-            effectiveWindow
-        );
-    }
-
-    /// @dev Splits out the Pyth price capture + storage writes + ETH refund from
-    ///      `createPriceMarketPyth` so the caller's stack stays within Yul IR limits.
-    function _initPriceMarketOverlay(
-        uint256 marketId,
-        bytes32 pythFeedId,
-        int64 strikePrice,
-        uint256 closeTime,
-        uint256 resolutionWindow,
-        bytes[] calldata pythUpdateData
-    ) private returns (int64 effectiveStrike, uint256 effectiveWindow) {
         PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
-        uint256 pythFee;
-
-        if (strikePrice > 0) {
-            // Strike market: explicit target price; only read priceExpo (no update, no fee).
-            pm.priceExpo = LibPriceMarketService.getFeedExponent(pythFeedId);
-            effectiveStrike = strikePrice;
-        } else {
-            // Up/Down market: capture the opening price directly from the submitted VAA.
-            int64 openPrice;
-            int32 priceExpo;
-            uint256 openPriceTime;
-            (openPrice, priceExpo, pythFee, openPriceTime) =
-                LibPriceMarketService.captureOpenPrice(pythFeedId, pythUpdateData, msg.value);
-            pm.priceExpo = priceExpo;
-            pm.openPriceTime = openPriceTime;
-            effectiveStrike = openPrice;
-        }
-
-        effectiveWindow = resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
-
         pm.feedId = pythFeedId;
         pm.feedProvider = FeedProvider.PYTH;
         pm.openTime = block.timestamp;
         pm.closeTime = closeTime;
+        pm.priceExpo = priceExpo;
         pm.resolutionWindow = effectiveWindow;
         pm.strikePrice = effectiveStrike;
+        pm.openPriceTime = openPriceTime;
 
-        // Refund excess ETH (Up/Down: refund beyond Pyth fee; strike: refund all).
+        // 7. Refund excess ETH (for Up/Down markets: refund beyond Pyth fee; for strike: refund all)
         LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);
+
+        emit PriceMarketCreatedPyth(
+            marketId, venueId, pythFeedId, effectiveStrike, priceExpo, block.timestamp, closeTime, effectiveWindow
+        );
     }
 
     // ---- Resolution ----
