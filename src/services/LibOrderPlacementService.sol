@@ -6,6 +6,7 @@ import {LibOrderBookService} from "./LibOrderBookService.sol";
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibVaultCollateralService} from "./LibVaultCollateralService.sol";
 import {LibVaultOutcomeTokenService} from "./LibVaultOutcomeTokenService.sol";
+import {LibErc1155ReceiverValidator} from "../validators/LibErc1155ReceiverValidator.sol";
 import {MarketTradingData, Order, Side} from "../interfaces/Types.sol";
 
 /**
@@ -51,6 +52,8 @@ library LibOrderPlacementService {
             uint256 collateralAmount = (tick * qty * config.tickSize) / 1e18;
             LibVaultCollateralService.depositCollateral(address(config.collateralToken), user, collateralAmount);
         } else {
+            // H-05: reject contract makers that cannot receive refunded outcome tokens.
+            LibErc1155ReceiverValidator.requireCanReceiveErc1155(user);
             LibVaultOutcomeTokenService.depositOutcomeTokens(config.positionIds[outcomeId], user, qty);
         }
 

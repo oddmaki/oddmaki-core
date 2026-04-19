@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {MarketFees, FeeBreakdown, VenueData, MarketRegistryData} from "../interfaces/Types.sol";
-import {LibProtocolStorage} from "../storage/LibProtocolStorage.sol";
-import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
+import {MarketFees, FeeBreakdown, MarketRegistryData} from "../interfaces/Types.sol";
 import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
 
 /**
@@ -27,26 +25,26 @@ library LibFeeCalculatorService {
     // =========================================================================
 
     /**
-     * @notice Compose MarketFees from live venue config, market registry, and protocol storage.
-     *         Returns all-zero struct if protocolTreasury == address(0) (fees disabled).
+     * @notice Compose MarketFees from the market registry's fee snapshot. Rates AND recipients
+     *         are read from the per-market snapshot taken at creation — mutations to venue.feeRecipient
+     *         or protocolTreasury after the market is live never redirect fees that resting makers
+     *         priced in at placement (H-01 fix).
+     *         Returns all-zero struct if protocolFeeRecipient == address(0) (fees disabled at creation).
      */
     function getMarketFees(uint256 marketId) internal view returns (MarketFees memory fees) {
-        address treasury = LibProtocolStorage.getProtocolTreasury();
+        MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
 
-        // If no treasury set, return all-zero struct (fees disabled, backward compatible)
-        if (treasury == address(0)) {
+        // If no protocol treasury was snapshotted, the market was created with fees disabled.
+        if (registry.protocolFeeRecipient == address(0)) {
             return fees;
         }
-
-        MarketRegistryData storage registry = LibMarketRegistryStorage.getMarketRegistryData(marketId);
-        VenueData storage venue = LibVenueStorage.getVenueData(registry.venueId);
 
         fees.protocolFeeBps = registry.protocolFeeBps;
         fees.venueFeeBps = registry.venueFeeBps;
         fees.creatorFeeBps = registry.creatorFeeBps;
         fees.operatorFeeBps = OPERATOR_FEE_BPS;
-        fees.protocolTreasury = treasury;
-        fees.venueTreasury = venue.feeRecipient;
+        fees.protocolTreasury = registry.protocolFeeRecipient;
+        fees.venueTreasury = registry.venueFeeRecipient;
         fees.marketCreator = registry.creator;
     }
 

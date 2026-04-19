@@ -73,6 +73,8 @@ struct MarketRegistryData {
     uint256 venueFeeBps;      // Snapshotted at market creation (H-2 fix)
     uint256 creatorFeeBps;    // Snapshotted at market creation (H-2 fix)
     uint256 protocolFeeBps;   // Snapshotted at market creation (0-200 bps)
+    address protocolFeeRecipient; // Snapshotted protocol treasury (H-01 fix)
+    address venueFeeRecipient;    // Snapshotted venue fee recipient (H-01 fix)
 }
 
 /// @notice Oracle / CTF: condition, outcomes, UMA economics. Keyed by questionId.

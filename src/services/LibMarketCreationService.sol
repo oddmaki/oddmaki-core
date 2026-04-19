@@ -111,12 +111,14 @@ library LibMarketCreationService {
             tickSize
         );
 
-        // Step 6b: Snapshot fee BPS onto market (immutable per market).
+        // Step 6b: Snapshot fee BPS and recipient addresses onto market (immutable per market).
         LibMarketRegistryAggregate.setFeeSnapshot(
             marketId,
             LibVenueStorage.getVenueData(venueId).venueFeeBps,
             LibVenueStorage.getVenueData(venueId).creatorFeeBps,
-            LibProtocolStorage.getProtocolFeeBps()
+            LibProtocolStorage.getProtocolFeeBps(),
+            LibProtocolStorage.getProtocolTreasury(),
+            LibVenueStorage.getVenueData(venueId).feeRecipient
         );
 
         // Step 7: Oracle initialization.

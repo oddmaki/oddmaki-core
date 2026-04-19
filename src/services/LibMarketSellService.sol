@@ -15,6 +15,7 @@ import {LibFeeCalculatorService} from "./LibFeeCalculatorService.sol";
 import {LibFeeDistributionService} from "./LibFeeDistributionService.sol";
 import {LibFillAggregate} from "../aggregates/LibFillAggregate.sol";
 import {LibMarketOrderValidator} from "../validators/LibMarketOrderValidator.sol";
+import {LibErc1155ReceiverValidator} from "../validators/LibErc1155ReceiverValidator.sol";
 import {Order, Side, MarketTradingData, MarketFees, FeeBreakdown, SettlementPath, MarketOrderType, MarketSellResult} from "../interfaces/Types.sol";
 
 /**
@@ -50,6 +51,8 @@ library LibMarketSellService {
         MarketOrderType orderType
     ) internal returns (MarketSellResult memory result) {
         LibMarketOrderValidator.validateMarketSellParams(tokenAmount, minPriceTick, outcomeId);
+        // H-05: reject contract sellers that cannot receive FAK-unsold outcome-token refunds.
+        LibErc1155ReceiverValidator.requireCanReceiveErc1155(msg.sender);
 
         MarketTradingData storage md = LibMarketTradingStorage.getMarketTradingData(marketId);
 
