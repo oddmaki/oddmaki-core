@@ -183,4 +183,79 @@ contract NegRiskFacetTest is Test, DiamondSetup {
             "attacker received USDC from release() via fake conditions"
         );
     }
+
+    // =========================================================================
+    // C-03 Audit Fix: convertPositions must reject duplicate conditionIds
+    // =========================================================================
+    //
+    // Exploit: convertPositions accepts a caller-supplied conditionIds[] array
+    // and releases (noCount - 1) * amount WCT without enforcing uniqueness. If
+    // the same conditionId appears twice among the NO inputs, the release math
+    // sees noCount=2 and pays out 1*amount collateral while only one unique NO
+    // position was genuinely burned against backing — looping this drains the
+    // WCT reserve. Verify the service rejects duplicates defensively.
+
+    function test_convertPositions_rejectsDuplicateConditionIds() public {
+        address wrapped = _getWrappedCollateral();
+        require(wrapped != address(0), "wrapped collateral not registered");
+
+        // Seed WCT reserve so release() would succeed if duplicate detection were missing.
+        collateral.mint(wrapped, 10_000e6);
+
+        address attacker = makeAddr("attacker");
+        uint256 amount = 100e6;
+
+        // [A, A, C]: conditionIds[0] duplicated as a NO input; conditionIds[2] is the YES output.
+        bytes32[] memory dupConditionIds = new bytes32[](3);
+        dupConditionIds[0] = conditionIds[0];
+        dupConditionIds[1] = conditionIds[0]; // DUPLICATE
+        dupConditionIds[2] = conditionIds[2];
+
+        // indexSet = 0b011: bits 0,1 mark the duplicated A's as NO inputs; bit 2 marks C as YES output.
+        uint256 indexSet = 3;
+
+        // Mint 2*amount NO[A] to the attacker so the facet-level batch transfer would succeed
+        // pre-fix. The duplicate check must revert before any collateral is released.
+        bytes32[] memory singleA = new bytes32[](1);
+        singleA[0] = conditionIds[0];
+        (uint256[] memory posNoA,) =
+            NegRiskFacet(address(diamond)).getConversionPositionIds(singleA, address(collateral), 1);
+        ctf.mintPositionTokens(attacker, posNoA[0], 2 * amount);
+
+        vm.startPrank(attacker);
+        ctf.setApprovalForAll(address(diamond), true);
+
+        uint256 reserveBefore = collateral.balanceOf(wrapped);
+        uint256 attackerUsdcBefore = collateral.balanceOf(attacker);
+
+        // After fix: revert on duplicate conditionId. Before fix: release(1*amount) succeeds.
+        vm.expectRevert();
+        NegRiskFacet(address(diamond)).convertPositions(dupConditionIds, address(collateral), indexSet, amount);
+        vm.stopPrank();
+
+        assertEq(
+            collateral.balanceOf(wrapped),
+            reserveBefore,
+            "WCT reserve drained via duplicate-conditionId path"
+        );
+        assertEq(
+            collateral.balanceOf(attacker),
+            attackerUsdcBefore,
+            "attacker received USDC via duplicate-conditionId release"
+        );
+    }
+
+    /// @notice The view path used for approvals/UX must surface the duplicate rejection too,
+    ///         so callers cannot silently pre-compute position IDs for an invalid batch.
+    function test_getConversionPositionIds_rejectsDuplicateConditionIds() public {
+        bytes32[] memory dupConditionIds = new bytes32[](3);
+        dupConditionIds[0] = conditionIds[0];
+        dupConditionIds[1] = conditionIds[1];
+        dupConditionIds[2] = conditionIds[1]; // DUPLICATE in the YES-output slice
+
+        uint256 indexSet = 1; // only bit 0 set -> conditionIds[0] is NO input
+
+        vm.expectRevert();
+        NegRiskFacet(address(diamond)).getConversionPositionIds(dupConditionIds, address(collateral), indexSet);
+    }
 }
