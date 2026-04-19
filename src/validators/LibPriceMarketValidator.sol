@@ -24,6 +24,8 @@ library LibPriceMarketValidator {
     error MarketNotActive();
     error ZeroAddress();
     error ETHRefundFailed();
+    error ResolutionWindowTooLarge();
+    error NoValidPriceUpdate();
 
     function requirePythConfigured() internal view {
         if (LibPriceMarketStorage.getPythContract() == address(0)) {
@@ -64,5 +66,9 @@ library LibPriceMarketValidator {
     function requireFeedProvider(uint256 marketId, FeedProvider expected) internal view {
         FeedProvider actual = LibPriceMarketStorage.getPriceMarket(marketId).feedProvider;
         if (actual != expected) revert FeedProviderMismatch(expected, actual);
+    }
+
+    function requireValidResolutionWindow(uint256 window) internal pure {
+        if (window > LibPriceMarketStorage.MAX_RESOLUTION_WINDOW) revert ResolutionWindowTooLarge();
     }
 }

@@ -17,6 +17,11 @@ library LibPriceMarketStorage {
     uint256 constant MIN_DURATION = 300; // 5 minutes
     uint256 constant MAX_DURATION = 31_536_000; // 1 year
     uint256 constant DEFAULT_RESOLUTION_WINDOW = 60; // ±60 seconds
+    // Upper bound on the resolution window the creator may request. An unbounded
+    // window lets a creator cherry-pick an archived Pyth VAA hours after closeTime
+    // and steer the outcome; 5 minutes is a tight compromise between liveness
+    // (wallet/bundler latency) and attack surface.
+    uint256 constant MAX_RESOLUTION_WINDOW = 300; // 5 minutes
 
     // Opening price staleness window (see captureOpenPrice).
     // The exploit requires VAAs that are hours-to-days old; 5 minutes blocks it

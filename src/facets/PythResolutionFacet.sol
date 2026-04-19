@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
 import {IPyth} from "lib/pyth-sdk-solidity/IPyth.sol";
-import {PythStructs} from "lib/pyth-sdk-solidity/PythStructs.sol";
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
@@ -122,6 +121,7 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 1. Validate price market params
         LibPriceMarketValidator.requirePythConfigured();
         LibPriceMarketValidator.requireValidCloseTime(closeTime);
+        LibPriceMarketValidator.requireValidResolutionWindow(resolutionWindow);
         if (strikePrice < 0) revert LibPriceMarketValidator.ZeroStrikePrice();
 
         // 2. Standard market creation guards (same as MarketsFacet.createMarket)
@@ -215,15 +215,18 @@ contract PythResolutionFacet is ReentrancyGuard {
         uint256 pythFee = pyth.getUpdateFee(pythUpdateData);
         if (msg.value < pythFee) revert LibPriceMarketValidator.InsufficientPythFee();
 
-        bytes32[] memory feedIds = new bytes32[](1);
-        feedIds[0] = pm.feedId;
+        // Defense-in-depth: cap the effective window at MAX_RESOLUTION_WINDOW even if
+        // the market stored a larger value (e.g. a legacy market created before the
+        // creation-time bound was enforced). Creator cannot widen the window here.
+        uint256 maxWindow = LibPriceMarketStorage.MAX_RESOLUTION_WINDOW;
+        uint256 effectiveWindow = pm.resolutionWindow > maxWindow ? maxWindow : pm.resolutionWindow;
 
-        // parsePriceFeedUpdates enforces timestamp within [closeTime, closeTime + window]
-        PythStructs.PriceFeed[] memory feeds = pyth.parsePriceFeedUpdates{value: pythFee}(
-            pythUpdateData, feedIds, uint64(pm.closeTime), uint64(pm.closeTime + pm.resolutionWindow)
-        );
-
-        int64 finalPrice = feeds[0].price.price;
+        // Prefer the earliest in-range VAA rather than the caller's cherry-pick:
+        // LibPriceMarketService parses each submitted update individually and keeps
+        // the one with the smallest publishTime. The resolver still chooses which
+        // VAAs to submit, but cannot reorder the array to bias which price is selected.
+        int64 finalPrice =
+            LibPriceMarketService.pickEarliestClosePrice(pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
 
         // 3. Compute outcome against strikePrice
         MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(reg.questionId);
