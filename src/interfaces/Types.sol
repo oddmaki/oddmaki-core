@@ -272,5 +272,6 @@ struct PriceMarket {
     uint256 resolutionWindow; // Seconds tolerance for oracle timestamp
     bool resolved;
     int64 strikePrice; // Reference price for resolution (openPrice for Up/Down, explicit for strike markets)
+    uint256 openPriceTime; // publishTime of the VAA used to capture the opening price (0 for strike markets)
 }
 

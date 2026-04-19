@@ -42,6 +42,8 @@ contract PythResolutionFacet is ReentrancyGuard {
 
     event PythContractUpdated(address indexed pythContract);
 
+    event OpenMaxStalenessUpdated(uint256 openMaxStaleness);
+
     event PriceMarketCreatedPyth(
         uint256 indexed marketId,
         uint256 indexed venueId,
@@ -68,6 +70,20 @@ contract PythResolutionFacet is ReentrancyGuard {
     /// @notice Get the configured Pyth oracle contract address.
     function getPythContract() external view returns (address) {
         return LibPriceMarketStorage.getPythContract();
+    }
+
+    /// @notice Set the opening-price staleness window (seconds). Diamond owner only.
+    ///         Pass 0 to fall back to the built-in default. Deliberately not venue-configurable —
+    ///         a loose value would reintroduce the stale-VAA attack surface at market creation.
+    function setOpenMaxStaleness(uint256 openMaxStaleness) external {
+        LibDiamond.enforceIsContractOwner();
+        LibPriceMarketStorage.getStorage().openMaxStaleness = openMaxStaleness;
+        emit OpenMaxStalenessUpdated(openMaxStaleness);
+    }
+
+    /// @notice Get the effective opening-price staleness window in seconds.
+    function getOpenMaxStaleness() external view returns (uint256) {
+        return LibPriceMarketStorage.getOpenMaxStaleness();
     }
 
     // ---- Creation ----
@@ -120,6 +136,7 @@ contract PythResolutionFacet is ReentrancyGuard {
         int64 effectiveStrike;
         int32 priceExpo;
         uint256 pythFee;
+        uint256 openPriceTime;
 
         if (strikePrice > 0) {
             // Strike market: explicit target price, only need priceExpo from feed (no update, no fee)
@@ -127,9 +144,9 @@ contract PythResolutionFacet is ReentrancyGuard {
             effectiveStrike = strikePrice;
             pythFee = 0;
         } else {
-            // Up/Down market: capture current Pyth price and use it as the strike reference
+            // Up/Down market: capture the opening price from the submitted VAA.
             int64 openPrice;
-            (openPrice, priceExpo, pythFee) =
+            (openPrice, priceExpo, pythFee, openPriceTime) =
                 LibPriceMarketService.captureOpenPrice(pythFeedId, pythUpdateData, msg.value);
             effectiveStrike = openPrice;
         }
@@ -161,6 +178,7 @@ contract PythResolutionFacet is ReentrancyGuard {
         pm.priceExpo = priceExpo;
         pm.resolutionWindow = effectiveWindow;
         pm.strikePrice = effectiveStrike;
+        pm.openPriceTime = openPriceTime;
 
         // 7. Refund excess ETH (for Up/Down markets: refund beyond Pyth fee; for strike: refund all)
         LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);

@@ -18,9 +18,17 @@ library LibPriceMarketStorage {
     uint256 constant MAX_DURATION = 31_536_000; // 1 year
     uint256 constant DEFAULT_RESOLUTION_WINDOW = 60; // ±60 seconds
 
+    // Opening price staleness window (see captureOpenPrice).
+    // The exploit requires VAAs that are hours-to-days old; 5 minutes blocks it
+    // with massive margin while accommodating slow wallet signing flows.
+    uint256 constant DEFAULT_OPEN_MAX_STALENESS = 300; // 5 minutes
+    // Small forward tolerance for Hermes/block clock drift.
+    uint64 constant OPEN_FUTURE_SKEW = 10;
+
     struct Storage {
         mapping(uint256 => PriceMarket) byMarketId;
         address pythContract;
+        uint256 openMaxStaleness; // 0 => use DEFAULT_OPEN_MAX_STALENESS
     }
 
     function getStorage() internal pure returns (Storage storage s) {
@@ -36,6 +44,11 @@ library LibPriceMarketStorage {
 
     function getPythContract() internal view returns (address) {
         return getStorage().pythContract;
+    }
+
+    function getOpenMaxStaleness() internal view returns (uint256) {
+        uint256 v = getStorage().openMaxStaleness;
+        return v == 0 ? DEFAULT_OPEN_MAX_STALENESS : v;
     }
 
     function isPriceMarket(uint256 marketId) internal view returns (bool) {

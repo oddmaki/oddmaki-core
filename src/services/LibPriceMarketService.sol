@@ -12,25 +12,34 @@ import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol
  *         and ETH refund handling.
  */
 library LibPriceMarketService {
-    /// @notice Capture the opening price from Pyth using updatePriceFeeds + getPriceUnsafe.
-    ///         Uses updatePriceFeeds instead of parsePriceFeedUpdates because the latter
-    ///         enforces publishTime within a narrow window of block.timestamp, which breaks
-    ///         when wallet signing takes too long. updatePriceFeeds only requires the data
-    ///         be newer than what's stored — no relationship to block.timestamp.
+    /// @notice Capture the opening price by parsing the submitted VAA directly.
+    ///         Uses parsePriceFeedUpdates (not updatePriceFeeds + getPriceUnsafe) so the
+    ///         opening price comes straight from the submitted update, with its publishTime
+    ///         enforced within [block.timestamp - OPEN_MAX_STALENESS, block.timestamp + OPEN_FUTURE_SKEW].
+    ///         This closes the stale-price exploit where a historical VAA — merely newer than
+    ///         Pyth's stored value — could pin an advantageous opening price at market creation.
     function captureOpenPrice(bytes32 pythFeedId, bytes[] calldata pythUpdateData, uint256 msgValue)
         internal
-        returns (int64 openPrice, int32 priceExpo, uint256 pythFee)
+        returns (int64 openPrice, int32 priceExpo, uint256 pythFee, uint256 openPriceTime)
     {
         address pythContract = LibPriceMarketStorage.getPythContract();
         IPyth pyth = IPyth(pythContract);
         pythFee = pyth.getUpdateFee(pythUpdateData);
         if (msgValue < pythFee) revert LibPriceMarketValidator.InsufficientPythFee();
 
-        pyth.updatePriceFeeds{value: pythFee}(pythUpdateData);
-        PythStructs.Price memory openPriceData = pyth.getPriceUnsafe(pythFeedId);
+        uint256 maxStaleness = LibPriceMarketStorage.getOpenMaxStaleness();
+        uint64 minPub = uint64(block.timestamp > maxStaleness ? block.timestamp - maxStaleness : 0);
+        uint64 maxPub = uint64(block.timestamp) + LibPriceMarketStorage.OPEN_FUTURE_SKEW;
 
-        openPrice = openPriceData.price;
-        priceExpo = openPriceData.expo;
+        bytes32[] memory feedIds = new bytes32[](1);
+        feedIds[0] = pythFeedId;
+
+        PythStructs.PriceFeed[] memory feeds =
+            pyth.parsePriceFeedUpdates{value: pythFee}(pythUpdateData, feedIds, minPub, maxPub);
+
+        openPrice = feeds[0].price.price;
+        priceExpo = feeds[0].price.expo;
+        openPriceTime = feeds[0].price.publishTime;
     }
 
     /// @notice Read the price exponent for a Pyth feed without updating.
