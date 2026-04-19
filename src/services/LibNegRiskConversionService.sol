@@ -21,6 +21,9 @@ library LibNegRiskConversionService {
     bytes32 constant PARENT_COLLECTION_ID = bytes32(0);
     address constant NO_TOKEN_BURN_ADDRESS = address(bytes20(bytes32(keccak256("NO_TOKEN_BURN_ADDRESS"))));
 
+    error UnregisteredConditionId(bytes32 conditionId);
+    error InvalidIndexSet();
+
     function calculateConversionPositionIds(bytes32[] calldata conditionIds, address collateralToken, uint256 indexSet)
         internal
         view
@@ -32,8 +35,14 @@ library LibNegRiskConversionService {
         require(ctf != address(0), "Vault: ctf not set");
 
         uint256 totalMarkets = conditionIds.length;
+        // Reject indexSets with bits beyond the supplied conditions (C-02: bit-alignment check).
+        if (totalMarkets < 256 && indexSet >> totalMarkets != 0) revert InvalidIndexSet();
+
         uint256 noPositionCount = 0;
         for (uint256 i = 0; i < totalMarkets; i++) {
+            // C-02: every conditionId must be a Diamond-registered neg-risk condition. Blocks
+            // attacker-prepared CTF conditions that would otherwise mint unbacked WCT / drain release().
+            if (!LibVaultStorage.needsWrapping(conditionIds[i])) revert UnregisteredConditionId(conditionIds[i]);
             if ((indexSet & (uint256(1) << i)) != 0) noPositionCount++;
         }
         uint256 yesPositionCount = totalMarkets - noPositionCount;
@@ -110,6 +119,9 @@ library LibNegRiskConversionService {
 
         for (uint256 i = 0; i < yesPositionCount; i++) {
             bytes32 conditionId = conditionIds[i];
+            // C-02: defense-in-depth — reject any conditionId not registered as a neg-risk
+            // condition by the Diamond. Prevents minting unbacked WCT on attacker conditions.
+            if (!LibVaultStorage.needsWrapping(conditionId)) revert UnregisteredConditionId(conditionId);
             bytes32 noCollectionId = IConditionalTokens(ctf).getCollectionId(PARENT_COLLECTION_ID, conditionId, 2);
             accumulatedNoPositionIds[i] = CTFHelpers.getPositionId(IERC20(wrapped), noCollectionId);
 
