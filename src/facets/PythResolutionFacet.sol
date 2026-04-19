@@ -122,6 +122,7 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 1. Validate price market params
         LibPriceMarketValidator.requirePythConfigured();
         LibPriceMarketValidator.requireValidCloseTime(closeTime);
+        LibPriceMarketValidator.requireValidResolutionWindow(resolutionWindow);
         if (strikePrice < 0) revert LibPriceMarketValidator.ZeroStrikePrice();
 
         // 2. Standard market creation guards (same as MarketsFacet.createMarket)
@@ -215,15 +216,17 @@ contract PythResolutionFacet is ReentrancyGuard {
         uint256 pythFee = pyth.getUpdateFee(pythUpdateData);
         if (msg.value < pythFee) revert LibPriceMarketValidator.InsufficientPythFee();
 
-        bytes32[] memory feedIds = new bytes32[](1);
-        feedIds[0] = pm.feedId;
+        // Defense-in-depth: cap the effective window at MAX_RESOLUTION_WINDOW even if
+        // the market stored a larger value (e.g. a legacy market created before the
+        // creation-time bound was enforced). Creator cannot widen the window here.
+        uint256 maxWindow = LibPriceMarketStorage.MAX_RESOLUTION_WINDOW;
+        uint256 effectiveWindow = pm.resolutionWindow > maxWindow ? maxWindow : pm.resolutionWindow;
 
-        // parsePriceFeedUpdates enforces timestamp within [closeTime, closeTime + window]
-        PythStructs.PriceFeed[] memory feeds = pyth.parsePriceFeedUpdates{value: pythFee}(
-            pythUpdateData, feedIds, uint64(pm.closeTime), uint64(pm.closeTime + pm.resolutionWindow)
-        );
-
-        int64 finalPrice = feeds[0].price.price;
+        // Prefer the earliest in-range VAA rather than the caller's cherry-pick:
+        // parse each submitted update individually and keep the one with the
+        // smallest publishTime. The resolver still chooses which VAAs to submit,
+        // but cannot reorder the array to bias which price is selected.
+        int64 finalPrice = _pickEarliestPythPrice(pyth, pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
 
         // 3. Compute outcome against strikePrice
         MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(reg.questionId);
@@ -243,5 +246,38 @@ contract PythResolutionFacet is ReentrancyGuard {
         LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);
 
         emit PriceMarketResolvedPyth(marketId, finalPrice, pm.strikePrice, outcome);
+    }
+
+    /// @dev Parse each submitted VAA individually and return the price whose
+    ///      publishTime is the smallest value in `[closeTime, closeTime + window]`.
+    ///      Reverts if no submitted VAA falls in range (propagated from Pyth).
+    function _pickEarliestPythPrice(
+        IPyth pyth,
+        bytes32 feedId,
+        bytes[] calldata pythUpdateData,
+        uint256 closeTime,
+        uint256 window
+    ) internal returns (int64 finalPrice) {
+        if (pythUpdateData.length == 0) revert LibPriceMarketValidator.NoValidPriceUpdate();
+
+        bytes32[] memory feedIds = new bytes32[](1);
+        feedIds[0] = feedId;
+        uint64 minPT = uint64(closeTime);
+        uint64 maxPT = uint64(closeTime + window);
+
+        uint64 earliestPublishTime = type(uint64).max;
+        bytes[] memory single = new bytes[](1);
+
+        for (uint256 i = 0; i < pythUpdateData.length; i++) {
+            single[0] = pythUpdateData[i];
+            uint256 singleFee = pyth.getUpdateFee(single);
+            PythStructs.PriceFeed[] memory feeds =
+                pyth.parsePriceFeedUpdates{value: singleFee}(single, feedIds, minPT, maxPT);
+            uint64 pt = uint64(feeds[0].price.publishTime);
+            if (pt < earliestPublishTime) {
+                earliestPublishTime = pt;
+                finalPrice = feeds[0].price.price;
+            }
+        }
     }
 }

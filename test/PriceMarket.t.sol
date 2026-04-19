@@ -800,4 +800,74 @@ contract PriceMarketTest is Test, DiamondSetup {
             LibPriceMarketStorage.DEFAULT_OPEN_MAX_STALENESS
         );
     }
+
+    // ======================================================================
+    // RESOLUTION-WINDOW UPPER BOUND (ODD-19)
+    // ======================================================================
+
+    /// @notice Creation must reject any resolutionWindow above MAX_RESOLUTION_WINDOW.
+    ///         Without the bound, a malicious creator can set a 12h window and
+    ///         then cherry-pick the most favourable archived Pyth VAA after closeTime.
+    function test_createPriceMarketPyth_revertsResolutionWindowTooLarge() public {
+        bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
+        uint256 closeTime = block.timestamp + DURATION;
+        uint256 tooLarge = LibPriceMarketStorage.MAX_RESOLUTION_WINDOW + 1;
+
+        vm.expectRevert(LibPriceMarketValidator.ResolutionWindowTooLarge.selector);
+        vm.prank(CREATOR);
+        PythResolutionFacet(address(diamond)).createPriceMarketPyth{value: 1}(
+            venueId, ETH_USD_FEED, int64(0), closeTime, _upDownOutcomes(), TICK_SIZE, address(collateral),
+            "q:title:Test,description:Test", 0, new bytes32[](0), tooLarge, pythData
+        );
+    }
+
+    /// @notice Creation with the exact MAX_RESOLUTION_WINDOW succeeds.
+    function test_createPriceMarketPyth_acceptsMaxResolutionWindow() public {
+        bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
+        uint256 closeTime = block.timestamp + DURATION;
+        uint256 maxWindow = LibPriceMarketStorage.MAX_RESOLUTION_WINDOW;
+
+        vm.prank(CREATOR);
+        uint256 marketId = PythResolutionFacet(address(diamond)).createPriceMarketPyth{value: 1}(
+            venueId, ETH_USD_FEED, int64(0), closeTime, _upDownOutcomes(), TICK_SIZE, address(collateral),
+            "q:title:Test,description:Test", 0, new bytes32[](0), maxWindow, pythData
+        );
+
+        (, , , , , , uint256 resolutionWindow, , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertEq(resolutionWindow, maxWindow);
+    }
+
+    /// @notice When the resolver submits multiple in-range VAAs, the contract must use
+    ///         the one with the earliest publishTime >= closeTime — not an arbitrary
+    ///         cherry-picked later VAA. This removes the creator's ability to pick a
+    ///         favourable price from the tail of the window.
+    function test_resolvePriceMarketPyth_picksEarliestValidPrice() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        vm.warp(closeTime);
+
+        // Earliest VAA publishes at closeTime with a DOWN-winning price.
+        // A later VAA publishes near end of the window with an UP-winning price.
+        int64 earlyPrice = OPEN_PRICE - 100000000; // Down wins at this price
+        int64 latePrice = OPEN_PRICE + 100000000; // Up wins at this price
+
+        // Order the array so the "late" (favourable-to-attacker) VAA comes first.
+        // Current behaviour returns index 0 arbitrarily — must fail.
+        // Fixed behaviour selects by earliest publishTime — must pick earlyPrice.
+        bytes[] memory pythData = new bytes[](2);
+        pythData[0] = mockPyth.createPriceFeedUpdateData(
+            ETH_USD_FEED, latePrice, 0, PRICE_EXPO, latePrice, 0, uint64(closeTime + 30)
+        );
+        pythData[1] = mockPyth.createPriceFeedUpdateData(
+            ETH_USD_FEED, earlyPrice, 0, PRICE_EXPO, earlyPrice, 0, uint64(closeTime)
+        );
+
+        uint256 fee = mockPyth.getUpdateFee(pythData);
+        vm.prank(RESOLVER);
+        PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: fee}(marketId, pythData);
+
+        (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertTrue(resolved);
+        assertEq(finalPrice, earlyPrice);
+    }
 }
