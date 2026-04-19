@@ -23,6 +23,7 @@ library LibNegRiskConversionService {
 
     error UnregisteredConditionId(bytes32 conditionId);
     error InvalidIndexSet();
+    error DuplicateConditionId(bytes32 conditionId);
 
     function calculateConversionPositionIds(bytes32[] calldata conditionIds, address collateralToken, uint256 indexSet)
         internal
@@ -43,6 +44,12 @@ library LibNegRiskConversionService {
             // C-02: every conditionId must be a Diamond-registered neg-risk condition. Blocks
             // attacker-prepared CTF conditions that would otherwise mint unbacked WCT / drain release().
             if (!LibVaultStorage.needsWrapping(conditionIds[i])) revert UnregisteredConditionId(conditionIds[i]);
+            // C-03: reject duplicate conditionIds. Each NO input must correspond to a distinct
+            // market; otherwise (N-1)*amount release accounting scales with conditionId multiplicity
+            // while the same underlying NO position is counted twice, draining the WCT reserve.
+            for (uint256 j = 0; j < i; j++) {
+                if (conditionIds[j] == conditionIds[i]) revert DuplicateConditionId(conditionIds[i]);
+            }
             if ((indexSet & (uint256(1) << i)) != 0) noPositionCount++;
         }
         uint256 yesPositionCount = totalMarkets - noPositionCount;
