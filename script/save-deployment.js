@@ -37,6 +37,7 @@ loadEnvFile();
 // Network configuration
 const NETWORKS = {
   'base-sepolia': { chainId: 84532, explorer: 'https://sepolia.basescan.org' },
+  'base': { chainId: 8453, explorer: 'https://basescan.org' },
   'localhost': { chainId: 31337, explorer: 'http://localhost:8545' },
 };
 
@@ -119,6 +120,13 @@ function extractContracts(broadcastData) {
     'MarketGroupFacet',
     'MarketOrdersFacet',
     'ResolutionFacet',
+    'ERC1155ReceiverFacet',
+    'AccessControlFacet',
+    'TagsFacet',
+    'MetadataFacet',
+    'PriceMarketFacet',
+    'PythResolutionFacet',
+    'BatchOrdersFacet',
   ];
 
   for (const tx of broadcastData.transactions) {

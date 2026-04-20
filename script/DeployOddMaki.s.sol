@@ -3,6 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {OddMaki, DiamondArgs} from "../src/OddMaki.sol";
 import {IDiamond} from "../src/interfaces/IDiamond.sol";
 
@@ -46,6 +47,8 @@ import {MockUmaOracle} from "../test/helpers/MockUmaOracle.sol";
  *   PROTOCOL_TREASURY    - Protocol fee recipient (required for production; defaults to deployer on Anvil)
  *   OWNER                - Diamond owner, e.g. multisig (defaults to deployer)
  *   DEPLOY_MOCK_USDC     - Set to "true" to deploy a MockUSDC token (auto on Anvil, opt-in for testnets)
+ *   USDC_ADDRESS         - Real USDC (or other 6-decimal collateral) to whitelist. Required for mainnet.
+ *                          Ignored when DEPLOY_MOCK_USDC=true / local (mock is used instead).
  *   DEPLOYER_ADDRESS     - Deployer address for --account mode (msg.sender in forge scripts != broadcaster).
  *                          Set this to your keystore account address when using --account.
  *   PRIVATE_KEY          - Deployer private key. Only needed for local Anvil dev (defaults to Anvil account 0).
@@ -101,6 +104,7 @@ contract DeployOddMakiScript is Script {
     address public umaOracleAddress;
     bool public deployMockUsdc;
     address public pythAddress;
+    address public usdcAddress;
 
     function setUp() public virtual {
         // For --account mode: set DEPLOYER_ADDRESS in .env to the keystore account address.
@@ -118,6 +122,7 @@ contract DeployOddMakiScript is Script {
         umaOracleAddress = vm.envOr("UMA_ORACLE_ADDRESS", address(0));
         deployMockUsdc = vm.envOr("DEPLOY_MOCK_USDC", false);
         pythAddress = vm.envOr("PYTH_ADDRESS", address(0));
+        usdcAddress = vm.envOr("USDC_ADDRESS", address(0));
     }
 
     function run() public virtual {
@@ -145,7 +150,12 @@ contract DeployOddMakiScript is Script {
 
         // 4. Deploy test tokens (local auto, testnet opt-in via DEPLOY_MOCK_USDC=true)
         //    Must run before ownership transfer so deployer can whitelist collateral.
-        if (isLocal || deployMockUsdc) _deployTestTokens();
+        if (isLocal || deployMockUsdc) {
+            _deployTestTokens();
+        } else {
+            // Real-collateral path: whitelist USDC_ADDRESS from env (required for mainnet).
+            _whitelistCollateral();
+        }
 
         // 5. Transfer ownership to final OWNER if different from deployer
         if (owner != deployer) {
@@ -259,9 +269,10 @@ contract DeployOddMakiScript is Script {
 
         // ASSERT_TRUTH for Base Sepolia, ASSERT_TRUTH2 for Base mainnet
         // Can be updated later via ProtocolFacet.setUmaIdentifier()
-        bytes32 umaIdentifier = "ASSERT_TRUTH";
+        bool isMainnet = block.chainid == 8453;
+        bytes32 umaIdentifier = isMainnet ? bytes32("ASSERT_TRUTH2") : bytes32("ASSERT_TRUTH");
         ProtocolFacet(address(protocol)).setUmaIdentifier(umaIdentifier);
-        console.log("  UMA identifier set to: ASSERT_TRUTH");
+        console.log("  UMA identifier set to:", isMainnet ? "ASSERT_TRUTH2" : "ASSERT_TRUTH");
 
         // Pyth Oracle (optional — skip if not set)
         if (pythAddress != address(0)) {
@@ -284,6 +295,37 @@ contract DeployOddMakiScript is Script {
         ProtocolFacet(address(protocol)).setCollateralWhitelisted(address(mockUsdc), true);
         console.log("  MockUSDC whitelisted as collateral");
 
+        console.log("");
+    }
+
+    // -------------------------------------------------------------------------
+    // Real collateral whitelist (non-mock path)
+    // -------------------------------------------------------------------------
+
+    function _whitelistCollateral() internal {
+        if (usdcAddress == address(0)) {
+            console.log("WARNING: USDC_ADDRESS not set - no collateral whitelisted.");
+            console.log("  Whitelist manually via ProtocolFacet.setCollateralWhitelisted() after deploy.");
+            console.log("");
+            return;
+        }
+
+        // Sanity-check the token before whitelisting: decimals must be 6 (USDC convention
+        // and the scale assumed by SDK/subgraph). symbol() is logged for eyeball verification
+        // during dry-runs — a typo in USDC_ADDRESS produces an obviously-wrong symbol.
+        IERC20Metadata token = IERC20Metadata(usdcAddress);
+        uint8 decimals = token.decimals();
+        string memory symbol = token.symbol();
+
+        require(decimals == 6, "USDC_ADDRESS: expected 6 decimals");
+
+        console.log("Whitelisting collateral...");
+        console.log("  Address: ", usdcAddress);
+        console.log("  Symbol:  ", symbol);
+        console.log("  Decimals:", decimals);
+
+        ProtocolFacet(address(protocol)).setCollateralWhitelisted(usdcAddress, true);
+        console.log("  Whitelisted");
         console.log("");
     }
 
@@ -538,7 +580,10 @@ contract DeployOddMakiScript is Script {
         console.log("  CTF:              ", ctfAddress);
         console.log("  UMA Oracle:       ", umaOracleAddress);
         console.log("  Protocol Treasury:", protocolTreasury);
-        console.log("  UMA Identifier:    ASSERT_TRUTH");
+        console.log(
+            "  UMA Identifier:   ",
+            block.chainid == 8453 ? "ASSERT_TRUTH2" : "ASSERT_TRUTH"
+        );
         console.log("");
 
         if (isLocal) {
