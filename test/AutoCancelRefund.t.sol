@@ -112,7 +112,7 @@ contract AutoCancelRefundTest is Test, DiamondSetup {
     /**
      * @notice C-01: BUY taker with remainder must be refunded on auto-cancel.
      *
-     * Setup: SELL maker 50 @ tick=60 (orderId=1), BUY taker 100 @ tick=60 (orderId=2).
+     * Setup: SELL maker 50 at tick=60 (orderId=1), BUY taker 100 at tick=60 (orderId=2).
      * The affordable-reduction trims fill qty to ~49.21; the remaining ~50.79 shares in the
      * BUY order trigger the auto-cancel branch. The never-attempted portion
      * (buyQty - sellQty) = 50 shares worth of escrow (= 30e18) must come back to ALICE.
