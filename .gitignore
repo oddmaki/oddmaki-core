@@ -2,6 +2,10 @@
 cache/
 out/
 
+# Generated Standard JSON Input files for manual Basescan UI verification
+# (regenerable via ./script/generate-standard-json.sh — see DeployOddMaki.s.sol header)
+verify-json/
+
 # Ignores development broadcast logs
 !/broadcast
 /broadcast/*/31337/
