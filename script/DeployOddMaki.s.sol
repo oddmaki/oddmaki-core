@@ -60,9 +60,26 @@ import {MockUmaOracle} from "../test/helpers/MockUmaOracle.sol";
  *     forge script script/DeployOddMaki.s.sol:DeployOddMakiScript \
  *       --broadcast --rpc-url http://localhost:8545
  *
- *   Base Sepolia / Production (set DEPLOYER_ADDRESS, CTF_ADDRESS, UMA_ORACLE_ADDRESS, PROTOCOL_TREASURY in .env):
+ *   Base Sepolia / Production (set DEPLOYER_ADDRESS, CTF_ADDRESS, UMA_ORACLE_ADDRESS,
+ *   PROTOCOL_TREASURY in .env):
+ *
  *     forge script script/DeployOddMaki.s.sol:DeployOddMakiScript \
- *       --rpc-url $RPC_URL --account deployer --broadcast --verify --etherscan-api-key $ETHERSCAN_API_KEY
+ *       --rpc-url $RPC_URL --account deployer --broadcast \
+ *       --verify --etherscan-api-key $ETHERSCAN_API_KEY
+ *
+ *   Verification context: foundry.toml sets `bytecode_hash = "none"` so the metadata
+ *   IPFS hash is omitted from the bytecode trailer. Without that, Etherscan V2's
+ *   recompiler diverges from on-chain bytecode on via_ir projects (a Foundry+Etherscan
+ *   bug, not ours), and `--verify` fails with "bytecode does NOT match". With "none",
+ *   the standard `--verify --etherscan-api-key` flow works reliably.
+ *
+ *   Fallback if anything goes wrong:
+ *     # Verify all deployed contracts via Sourcify (writes to Basescan via integration)
+ *     ./script/verify-deployment.sh           # Base Sepolia (84532)
+ *     ./script/verify-deployment.sh 8453      # Base mainnet
+ *
+ *     # Or generate Standard JSON files for manual UI upload
+ *     ./script/generate-standard-json.sh      # writes to ./verify-json/
  */
 contract DeployOddMakiScript is Script {
     // Deployed protocol
