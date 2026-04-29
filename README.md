@@ -72,6 +72,12 @@ If you find a vulnerability, please report it responsibly to **team@oddmaki.com*
 - [oddmaki-subgraph](https://github.com/OddMaki/oddmaki-subgraph) — Subgraph for indexed reads
 - [oddmaki-venue-starter](https://github.com/OddMaki/oddmaki-venue-starter) — Starter template for venue operators
 
+## Links
+
+- **Protocol** — [oddmaki.com](https://oddmaki.com)
+- **Maintainer** — [predictablereality.com](https://predictablereality.com)
+- **Contact** — team@oddmaki.com
+
 ## License
 
-[Business Source License 1.1](./LICENSE) — see LICENSE for details. Converts to MIT on January 1, 2029.
+[Business Source License 1.1](./LICENSE) — see LICENSE for details. Converts to MIT on January 1, 2030. Copyright (c) 2025-2026 Predictable Reality, Inc.

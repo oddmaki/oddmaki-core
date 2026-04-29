@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025-2026 Predictable Reality, Inc.
+// Author: Carlos Revelo (Predictable Reality, Inc.)
+//
+// Based on the EIP-2535 Diamonds reference implementation by Nick Mudge
+// <nick@perfectabstractions.com>, originally licensed under MIT.
+// Reference: https://eips.ethereum.org/EIPS/eip-2535
 pragma solidity ^0.8.0;
-//******************************************************************************\
-//* Author: Nick Mudge <nick@perfectabstractions.com> (https://twitter.com/mudgen)
-//* EIP-2535 Diamonds: https://eips.ethereum.org/EIPS/eip-2535
-//******************************************************************************/
 
 import { LibDiamond } from  "../libraries/LibDiamond.sol";
 import { IDiamondLoupe } from "../interfaces/IDiamondLoupe.sol";
