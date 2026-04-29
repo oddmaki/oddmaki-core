@@ -60,9 +60,39 @@ import {MockUmaOracle} from "../test/helpers/MockUmaOracle.sol";
  *     forge script script/DeployOddMaki.s.sol:DeployOddMakiScript \
  *       --broadcast --rpc-url http://localhost:8545
  *
- *   Base Sepolia / Production (set DEPLOYER_ADDRESS, CTF_ADDRESS, UMA_ORACLE_ADDRESS, PROTOCOL_TREASURY in .env):
+ *   Base Sepolia / Production (set DEPLOYER_ADDRESS, CTF_ADDRESS, UMA_ORACLE_ADDRESS,
+ *   PROTOCOL_TREASURY in .env). Two steps — deploy first, verify separately:
+ *
+ *     # 1. Deploy (do NOT use --verify here; see "Why two steps" below)
  *     forge script script/DeployOddMaki.s.sol:DeployOddMakiScript \
- *       --rpc-url $RPC_URL --account deployer --broadcast --verify --etherscan-api-key $ETHERSCAN_API_KEY
+ *       --rpc-url $RPC_URL --account deployer --broadcast
+ *
+ *     # 2. Generate per-contract Standard JSON Input files
+ *     ./script/generate-standard-json.sh           # Base Sepolia (84532)
+ *     ./script/generate-standard-json.sh 8453      # Base mainnet
+ *
+ *     # 3. For each contract in ./verify-json/, manually upload via the BaseScan UI:
+ *     #    https://[sepolia.]basescan.org/verifyContract?a=<address>
+ *     #    Compiler Type:    Solidity (Standard-Json-Input)
+ *     #    Compiler Version: v0.8.28+commit.7893614a
+ *     #    License Type:     Business Source License 1.1   (MIT for Mocks)
+ *
+ *     # OPTIONAL: Sourcify batch verification — works for some contracts; partial
+ *     # Basescan integration. Useful for testnets, does NOT replace step 3 for mainnet.
+ *     ./script/verify-deployment.sh                # Base Sepolia (84532)
+ *     ./script/verify-deployment.sh 8453           # Base mainnet
+ *
+ *   Why two steps (do NOT use --verify in the deploy command):
+ *     Etherscan V2's multi-chain API verifier has a confirmed bug recompiling via_ir
+ *     builds. forge submits correct Standard JSON (verified via --show-standard-json-input)
+ *     and on-chain bytecode matches the local artifact byte-for-byte, but Etherscan's
+ *     recompile diverges and reports "bytecode does NOT match". We tested every variable:
+ *     license source (BUSL-1.1 vs MIT), Foundry version (1.4.4 vs 1.6.0), bytecode_hash
+ *     (ipfs vs none), compiler commit hash, --via-ir flag, evm_version (cancun vs shanghai)
+ *     — all fail via the API. The Basescan UI's Standard-Json-Input flow uses a different
+ *     code path on Etherscan's side and works reliably, hence the manual step.
+ *
+ *     Mainnet contracts only need to be verified once, ever. ~30 min of clicks.
  */
 contract DeployOddMakiScript is Script {
     // Deployed protocol
