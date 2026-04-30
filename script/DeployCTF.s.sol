@@ -20,6 +20,49 @@ import {console} from "forge-std/console.sol";
 ///      Forge auto-detects solc 0.5.x for that file (the project's via_ir/0.8.28
 ///      pins only apply to its own src/ pass) and emits the artifact at the
 ///      expected out/ path.
+///
+///      Then run the deploy (no `--verify` — see VERIFICATION below):
+///
+///          forge script script/DeployCTF.s.sol:DeployCTFScript \
+///            --rpc-url $RPC_URL \
+///            --account deployer-mainnet \
+///            --sender $(cast wallet address --account deployer-mainnet) \
+///            --broadcast
+///
+///      Record the returned address — pass it as CTF_ADDRESS to the Diamond deploy.
+///
+///      VERIFICATION:
+///      `forge script ... --verify` will silently skip this contract because it's
+///      deployed via raw `create` from bytecode, so forge can't tie the address to
+///      a build artifact. `forge verify-contract --flatten` also fails — forge's
+///      flattener can't parse Solidity 0.5.x. Verify manually on Basescan via the
+///      Standard JSON Input flow:
+///
+///        1. Generate the standard JSON input from the artifact (rebuilds the
+///           exact compiler input forge used, including the OZ remapping):
+///
+///             python3 - <<'PY'
+///             import json
+///             art = json.load(open('out/ConditionalTokens.sol/ConditionalTokens.json'))
+///             sources = {p: {'content': open(p).read()} for p in art['metadata']['sources']}
+///             json.dump({
+///                 'language': 'Solidity',
+///                 'sources': sources,
+///                 'settings': {
+///                     'optimizer': {'enabled': True, 'runs': 200},
+///                     'evmVersion': art['metadata']['settings'].get('evmVersion', 'istanbul'),
+///                     'remappings': ['openzeppelin-solidity/=lib/openzeppelin-solidity/'],
+///                     'outputSelection': {'*': {'*': ['abi','evm.bytecode','evm.deployedBytecode','metadata']}},
+///                 },
+///             }, open('out/ConditionalTokens.standard-input.json', 'w'))
+///             PY
+///
+///        2. On the deployed address page on Basescan, click Verify and Publish:
+///             - Compiler Type: Solidity (Standard-Json-Input)
+///             - Compiler Version: v0.5.17+commit.d19bba13
+///             - License: LGPL-3.0
+///             - Upload: out/ConditionalTokens.standard-input.json
+///             - Constructor Arguments: (empty)
 contract DeployCTFScript is Script {
     function run() external returns (address) {
         vm.startBroadcast();
