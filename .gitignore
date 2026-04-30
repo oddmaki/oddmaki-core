@@ -25,3 +25,4 @@ node_modules/
 /broadcast/**/dry-run/  # And ignore dry-run simulations
 .claude/settings.json
 .env.test
+.env.mainnet
