@@ -15,7 +15,8 @@ skip = ["src/legacy/**/*", "test/legacy/**/*", "script/legacy/**/*"]
 
 # Allow scripts to read deployment files
 fs_permissions = [
-    { access = "read", path = "./deployments" }
+    { access = "read", path = "./deployments" },
+    { access = "read", path = "./out" }
 ]
 
 remappings = [

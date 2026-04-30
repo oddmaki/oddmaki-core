@@ -21,7 +21,7 @@
     }
   },
   "lib/protocol": {
-    "rev": "9bfbbe98bed0ac7d9c924115018bb0e26987e2b5"
+    "rev": "b77e698c1ac84a499da94d67c6c1b4caf68cbb0e"
   },
   "lib/pyth-sdk-solidity": {
     "tag": {
