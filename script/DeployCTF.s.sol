@@ -8,7 +8,18 @@ import {console} from "forge-std/console.sol";
 
 /// @title Deploy ConditionalTokens
 /// @notice Deploy Gnosis ConditionalTokens using raw bytecode
-/// @dev ConditionalTokens is Solidity 0.5.1, so we deploy via bytecode
+/// @dev ConditionalTokens is Solidity 0.5.x, incompatible with the project's
+///      0.8.28 + via_ir profile, so we deploy by reading its compiled bytecode.
+///      The artifact at out/ConditionalTokens.sol/ConditionalTokens.json is NOT
+///      produced by the regular `forge build` (nothing in src/ imports the
+///      concrete contract — only IConditionalTokens.sol). Compile it explicitly
+///      before running this script:
+///
+///          forge build lib/conditional-tokens-contracts/contracts/ConditionalTokens.sol
+///
+///      Forge auto-detects solc 0.5.x for that file (the project's via_ir/0.8.28
+///      pins only apply to its own src/ pass) and emits the artifact at the
+///      expected out/ path.
 contract DeployCTFScript is Script {
     function run() external returns (address) {
         vm.startBroadcast();
