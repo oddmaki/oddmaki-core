@@ -1,0 +1,36 @@
+{
+  "network": "base",
+  "chainId": 8453,
+  "version": "1.0.0",
+  "timestamp": "2026-04-30T19:52:22.002Z",
+  "contracts": {
+    "DiamondCutFacet": "0xa7ece197054f21ff91dee8afa26060362517e83e",
+    "DiamondLoupeFacet": "0x24bd651195458934cf33348492b2ff02a6276ffc",
+    "OwnershipFacet": "0x78577c8c119d9d18d4a6f83d3bd56a49b1848eab",
+    "VaultFacet": "0xa336f497fc74f1cb4284bcbc767cbcd09ff79649",
+    "MarketsFacet": "0x723b3211d1b3d34537489e9a6f89ba54e44b1980",
+    "LimitOrdersFacet": "0x4f1a1489ea514bf1ab66bbb09c8c6ce3d2e17389",
+    "NegRiskFacet": "0xbe56c1197ab912a0797b84a9bc9da30178b0483b",
+    "MatchingFacet": "0x0f6a77d2e3747d6063d6f0ba87aba0eba300336d",
+    "VenueFacet": "0xe85963e164c8d0d132af1f282c6cbb71e7310461",
+    "OrderBookFacet": "0xd954cb1b509e1c5ad33f5bf7566cb40652075427",
+    "ProtocolFacet": "0xad8ffc0a4efad92207385e2c4dd059fb177bf5fc",
+    "MarketGroupFacet": "0xfda4ff88bbe163a85473f58b79e33c6de08182ce",
+    "MarketOrdersFacet": "0xbc2e16ed4226b3e9b129956e2e5f379d492cba23",
+    "ResolutionFacet": "0x644e46f3205a7f3385b16606225a90509acee7f8",
+    "ERC1155ReceiverFacet": "0x16b6c6ac14ce3e856802866704d31e5dcd0ad8c6",
+    "AccessControlFacet": "0x7e85fc0622ec48d568cc1d2476748df61cc8638b",
+    "TagsFacet": "0x8d333307bcef2a1bb42f2d61b372969dfa017da8",
+    "MetadataFacet": "0xf5d334f7b462dac298063a62392e59cf03911e1e",
+    "PriceMarketFacet": "0x318c38d619b73c67601c8d533fab3a20b98ac84a",
+    "PythResolutionFacet": "0xb69e41c39804b317e23fac9b36ff5aaba07271a7",
+    "BatchOrdersFacet": "0x52d24df133e408371fa2d1a4968a9220aed61b0b",
+    "OddMaki": "0x025d086a62d93e24f3cb3f161612ca8e9530127d",
+    "ConditionalTokens": "0x3e2ae408ca03f27849edff32d107c7b8ea5c87b4",
+    "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "UmaOracle": "0x2aBf1Bd76655de80eDb3086114315Eec75AF500c"
+  },
+  "links": {
+    "explorer": "https://basescan.org"
+  }
+}
