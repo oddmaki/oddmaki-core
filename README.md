@@ -44,6 +44,18 @@ src/
 - [UMA Optimistic Oracle V3](https://docs.uma.xyz/) — Market resolution
 - [OpenZeppelin](https://github.com/OpenZeppelin/openzeppelin-contracts) — Security primitives
 
+## Deployments
+
+### Base mainnet (chainId 8453)
+
+**Diamond:** [`0x025d086a62d93e24f3cb3f161612ca8e9530127d`](https://basescan.org/address/0x025d086a62d93e24f3cb3f161612ca8e9530127d)
+
+All protocol calls go through the Diamond proxy. Full facet manifest: [`deployments/base/v1.0.0.json`](./deployments/base/v1.0.0.json).
+
+### Base Sepolia (testnet)
+
+See [`deployments/base-sepolia/latest.json`](./deployments/base-sepolia/latest.json).
+
 ## Build
 
 Requires [Foundry](https://book.getfoundry.sh/getting-started/installation).
