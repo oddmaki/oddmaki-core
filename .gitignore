@@ -6,13 +6,12 @@ out/
 # (regenerable via ./script/generate-standard-json.sh — see DeployOddMaki.s.sol header)
 verify-json/
 
-# Ignores development broadcast logs
-!/broadcast
-/broadcast/*/31337/
-/broadcast/**/dry-run/
+# Foundry broadcast logs (regenerable from script runs)
+broadcast/
 
-# Dotenv file
-.env
+# Dotenv files (allow tracked .env*.example samples)
+.env*
+!.env*.example
 
 # Node modules
 node_modules/
@@ -20,9 +19,5 @@ node_modules/
 # macOS
 .DS_Store
 
-!/broadcast              # Allow broadcast folder
-/broadcast/*/31337/     # But ignore local Anvil deployments (chainId 31337)
-/broadcast/**/dry-run/  # And ignore dry-run simulations
+# Local Claude Code settings
 .claude/settings.json
-.env.test
-.env.mainnet
