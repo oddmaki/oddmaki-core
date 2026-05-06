@@ -432,18 +432,19 @@ contract DeployOddMakiScript is Script {
         cuts[7] = _cut(address(matchingFacet), matchingSelectors);
 
         // 8: VenueFacet
-        bytes4[] memory venueSelectors = new bytes4[](11);
+        bytes4[] memory venueSelectors = new bytes4[](12);
         venueSelectors[0] = VenueFacet.createVenue.selector;
         venueSelectors[1] = VenueFacet.updateVenue.selector;
         venueSelectors[2] = VenueFacet.updateVenueFees.selector;
         venueSelectors[3] = VenueFacet.updateVenueOracleParams.selector;
-        venueSelectors[4] = VenueFacet.pauseVenue.selector;
-        venueSelectors[5] = VenueFacet.unpauseVenue.selector;
-        venueSelectors[6] = VenueFacet.getVenue.selector;
-        venueSelectors[7] = VenueFacet.getNextVenueId.selector;
-        venueSelectors[8] = VenueFacet.getVenueFees.selector;
-        venueSelectors[9] = VenueFacet.canTrade.selector;
-        venueSelectors[10] = VenueFacet.canCreateMarket.selector;
+        venueSelectors[4] = VenueFacet.updateVenueMarketCreationFee.selector;
+        venueSelectors[5] = VenueFacet.pauseVenue.selector;
+        venueSelectors[6] = VenueFacet.unpauseVenue.selector;
+        venueSelectors[7] = VenueFacet.getVenue.selector;
+        venueSelectors[8] = VenueFacet.getNextVenueId.selector;
+        venueSelectors[9] = VenueFacet.getVenueFees.selector;
+        venueSelectors[10] = VenueFacet.canTrade.selector;
+        venueSelectors[11] = VenueFacet.canCreateMarket.selector;
         cuts[8] = _cut(address(venueFacet), venueSelectors);
 
         // 9: OrderBookFacet
