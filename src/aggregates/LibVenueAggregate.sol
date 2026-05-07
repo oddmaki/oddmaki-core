@@ -31,7 +31,7 @@ library LibVenueAggregate {
         uint256 umaRewardAmount,
         uint256 umaMinBond
     ) internal returns (uint256 venueId) {
-        LibVenueValidator.validateCreateVenueParams(name, feeRecipient, venueFeeBps, creatorFeeBps, marketCreationFee);
+        LibVenueValidator.validateCreateVenueParams(name, feeRecipient, venueFeeBps, creatorFeeBps);
         LibVenueValidator.validateOracleParams(umaMinBond);
         LibTickSizeValidator.requireValidTickSize(defaultTickSize);
 
@@ -95,6 +95,11 @@ library LibVenueAggregate {
         VenueData storage venue = LibVenueStorage.getVenueData(venueId);
         venue.umaRewardAmount = umaRewardAmount;
         venue.umaMinBond = umaMinBond;
+    }
+
+    function updateVenueMarketCreationFee(uint256 venueId, address caller, uint256 newFee) internal {
+        LibVenueValidator.requireActiveVenueOperator(venueId, caller);
+        LibVenueStorage.getVenueData(venueId).marketCreationFee = newFee;
     }
 
     // ---- Pause / Unpause ----

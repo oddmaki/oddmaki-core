@@ -5,11 +5,21 @@
 //
 // Usage:
 //   node script/save-deployment.js <network> <version> [notes]
+//   node script/save-deployment.js <network> <version> [notes] --upgrade <upgrade-script-filename>
 //
-// Examples:
+// Examples (genesis):
 //   node script/save-deployment.js base-sepolia v1.0.0
 //   node script/save-deployment.js base-sepolia v1.1.0 "Added market orders"
-//   node script/save-deployment.js localhost v0.1.0
+//
+// Examples (upgrade):
+//   node script/save-deployment.js base-sepolia v1.1.0 \
+//     "VenueFacet — drop creation fee floor" \
+//     --upgrade 20260506_VenueFacet_RemoveCreationFeeFloor.s.sol
+//
+// Upgrade mode reads deployments/<network>/latest.json as the base, overlays
+// any contract addresses created by the upgrade script's broadcast, and records
+// `upgrade.previousVersion` / `upgrade.script` / `upgrade.changedContracts` in
+// the new snapshot for audit.
 
 const fs = require('fs');
 const path = require('path');
@@ -43,11 +53,26 @@ const NETWORKS = {
 
 // Parse command line arguments
 function parseArgs() {
-  const args = process.argv.slice(2);
+  const raw = process.argv.slice(2);
+
+  // Pull `--upgrade <script>` out of the positional list so the existing
+  // [network, version, notes] order keeps working.
+  let upgradeScript = null;
+  const args = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '--upgrade') {
+      upgradeScript = raw[i + 1];
+      i++;
+    } else {
+      args.push(raw[i]);
+    }
+  }
 
   if (args.length < 2) {
-    console.error('Usage: node save-deployment.js <network> <version> [notes]');
-    console.error('Example: node save-deployment.js base-sepolia v1.1.0 "Added new features"');
+    console.error('Usage: node save-deployment.js <network> <version> [notes] [--upgrade <script>]');
+    console.error('Example (genesis): node save-deployment.js base-sepolia v1.1.0 "Added new features"');
+    console.error('Example (upgrade): node save-deployment.js base-sepolia v1.1.0 "Notes" \\');
+    console.error('                     --upgrade 20260506_VenueFacet_RemoveCreationFeeFloor.s.sol');
     console.error(`\nAvailable networks: ${Object.keys(NETWORKS).join(', ')}`);
     process.exit(1);
   }
@@ -73,29 +98,57 @@ function parseArgs() {
   // Ensure version starts with 'v'
   const normalizedVersion = version.startsWith('v') ? version : `v${version}`;
 
-  return { network, version: normalizedVersion, notes };
+  if (upgradeScript === '') {
+    console.error('Error: --upgrade requires a script filename');
+    process.exit(1);
+  }
+
+  return { network, version: normalizedVersion, notes, upgradeScript };
 }
 
-// Read the run-latest.json file
-function readBroadcastFile(network) {
+// Read a forge broadcast file. `scriptName` defaults to the genesis deploy script.
+function readBroadcastFile(network, scriptName = 'DeployOddMaki.s.sol') {
   const chainId = NETWORKS[network].chainId;
   const broadcastPath = path.join(
     __dirname,
     '..',
     'broadcast',
-    'DeployOddMaki.s.sol',
+    scriptName,
     chainId.toString(),
     'run-latest.json'
   );
 
   if (!fs.existsSync(broadcastPath)) {
     console.error(`Error: Broadcast file not found at ${broadcastPath}`);
-    console.error('Make sure you have deployed to this network first.');
+    console.error('Make sure you have broadcast this script to this network first.');
     process.exit(1);
   }
 
   const data = fs.readFileSync(broadcastPath, 'utf8');
   return JSON.parse(data);
+}
+
+// Read the existing latest.json snapshot for this network. Required for upgrade mode.
+function readExistingLatest(network) {
+  const latestPath = path.join(__dirname, '..', 'deployments', network, 'latest.json');
+  if (!fs.existsSync(latestPath)) {
+    console.error(`Error: No existing deployment for ${network} at ${latestPath}`);
+    console.error('Upgrade mode requires a prior genesis deployment to overlay onto.');
+    process.exit(1);
+  }
+  return JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+}
+
+// Pull every CREATE'd contract out of an upgrade broadcast — these are the
+// new addresses that should overlay the previous snapshot.
+function extractUpgradeChanges(broadcastData) {
+  const changes = {};
+  for (const tx of broadcastData.transactions) {
+    if (tx.transactionType === 'CREATE' && tx.contractAddress && tx.contractName) {
+      changes[tx.contractName] = tx.contractAddress;
+    }
+  }
+  return changes;
 }
 
 // Extract contract addresses from broadcast data
@@ -248,7 +301,36 @@ function saveDeployment(network, version, deploymentData) {
 // Main execution
 function main() {
   try {
-    const { network, version, notes } = parseArgs();
+    const { network, version, notes, upgradeScript } = parseArgs();
+
+    if (upgradeScript) {
+      console.log(`📝 Saving upgrade snapshot for ${network} ${version} (script: ${upgradeScript})...`);
+
+      const previous = readExistingLatest(network);
+      console.log(`✓ Loaded previous snapshot v${previous.version} (${Object.keys(previous.contracts).length} contracts)`);
+
+      const broadcastData = readBroadcastFile(network, upgradeScript);
+      console.log(`✓ Read upgrade broadcast from chain ${broadcastData.chain}`);
+
+      const changes = extractUpgradeChanges(broadcastData);
+      const changedNames = Object.keys(changes);
+      if (changedNames.length === 0) {
+        console.error('Error: upgrade broadcast contains no CREATE transactions — nothing to overlay.');
+        process.exit(1);
+      }
+      console.log(`✓ Upgrade replaces ${changedNames.length} contract(s): ${changedNames.join(', ')}`);
+
+      const merged = { ...previous.contracts, ...changes };
+      const deploymentData = createDeploymentData(network, version, merged, notes);
+      deploymentData.upgrade = {
+        previousVersion: previous.version,
+        script: upgradeScript,
+        changedContracts: changedNames,
+      };
+
+      saveDeployment(network, version, deploymentData);
+      return;
+    }
 
     console.log(`📝 Saving deployment for ${network} ${version}...`);
 

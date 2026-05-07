@@ -14,9 +14,6 @@ import {VenueData} from "../interfaces/Types.sol";
  *         Used by aggregates, services, and facets to enforce venue invariants.
  */
 library LibVenueValidator {
-    // ---- Constants ----
-    uint256 constant MIN_MARKET_CREATION_FEE = 5e6; // 5 USDC (6 decimals)
-
     // ---- Errors: existence / ownership ----
     error VenueNotFound();
     error VenueInactive();
@@ -27,7 +24,6 @@ library LibVenueValidator {
     error InvalidVenueFee();
     error InvalidCreatorFee();
     error InvalidFeeRecipient();
-    error InvalidMarketCreationFee();
     error InvalidUmaMinBond();
 
     // ---- Existence / ownership checks ----
@@ -68,14 +64,12 @@ library LibVenueValidator {
         string calldata name,
         address feeRecipient,
         uint256 venueFeeBps,
-        uint256 creatorFeeBps,
-        uint256 marketCreationFee
+        uint256 creatorFeeBps
     ) internal pure {
         if (bytes(name).length == 0) revert InvalidVenueName();
         if (venueFeeBps < 1 || venueFeeBps > 200) revert InvalidVenueFee();
         if (creatorFeeBps > venueFeeBps) revert InvalidCreatorFee();
         if (feeRecipient == address(0)) revert InvalidFeeRecipient();
-        if (marketCreationFee < MIN_MARKET_CREATION_FEE) revert InvalidMarketCreationFee();
     }
 
     function validateUpdateVenueParams(string calldata name, address feeRecipient) internal pure {

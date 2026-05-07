@@ -22,6 +22,7 @@ contract VenueFacet is ReentrancyGuard {
     event VenueUpdated(uint256 indexed venueId, address indexed operator, string name, string metadata);
     event VenueFeesUpdated(uint256 indexed venueId, uint256 venueFeeBps, uint256 creatorFeeBps);
     event VenueOracleParamsUpdated(uint256 indexed venueId, uint256 umaRewardAmount, uint256 umaMinBond);
+    event VenueMarketCreationFeeUpdated(uint256 indexed venueId, uint256 newFee);
     event VenueAccessControlUpdated(uint256 indexed venueId, address tradingAccessControl, address creationAccessControl);
     event VenuePaused(uint256 indexed venueId, address indexed operator);
     event VenueUnpaused(uint256 indexed venueId, address indexed operator);
@@ -38,7 +39,7 @@ contract VenueFacet is ReentrancyGuard {
      * @param venueFeeBps           venue fee in basis points (1–200 bps).
      * @param creatorFeeBps         creator fee in basis points (0–venueFeeBps). Subtracted from venue fee.
      * @param defaultTickSize       default price increment for markets created under this venue.
-     * @param marketCreationFee     upfront fee (in collateral) charged to create a market (minimum 5 USDC).
+     * @param marketCreationFee     upfront fee (in collateral) charged to create a market. Can be zero.
      * @param umaRewardAmount       base UMA reward amount for oracle assertions.
      * @param umaMinBond            minimum bond required for UMA assertions.
      * @return venueId              the allocated venue identifier.
@@ -125,6 +126,17 @@ contract VenueFacet is ReentrancyGuard {
     {
         LibVenueAggregate.updateVenueOracleParams(venueId, msg.sender, umaRewardAmount, umaMinBond);
         emit VenueOracleParamsUpdated(venueId, umaRewardAmount, umaMinBond);
+    }
+
+    /**
+     * @notice Update the upfront market creation fee for a venue. Operator-only.
+     * @param venueId the venue to update.
+     * @param newFee  new market creation fee (in collateral). Can be zero.
+     * @dev Affects only markets created after this call. Existing markets are unaffected.
+     */
+    function updateVenueMarketCreationFee(uint256 venueId, uint256 newFee) external nonReentrant {
+        LibVenueAggregate.updateVenueMarketCreationFee(venueId, msg.sender, newFee);
+        emit VenueMarketCreationFeeUpdated(venueId, newFee);
     }
 
     /// @notice Pause a venue, blocking new orders and market creation. Operator-only.
