@@ -16,35 +16,57 @@ import {VenueFacet} from "../../src/facets/VenueFacet.sol";
  *
  * Storage migration: none. The VenueData struct is unchanged.
  *
- * Required env:
- *   DIAMOND_ADDRESS — the live OddMaki Diamond proxy address on the target network.
+ * ─── Required env ─────────────────────────────────────────────────────────
+ *   DIAMOND_ADDRESS  — live OddMaki Diamond proxy on the target network.
+ *   SAFE_MODE        — optional. When `true`, the script deploys the new
+ *                      VenueFacet but does NOT call diamondCut. Instead it
+ *                      prints the calldata for submission via Safe{Wallet}'s
+ *                      Transaction Builder. Use this when the Diamond owner
+ *                      is a Safe / multisig.
  *
- * Run (test simulation):
+ * ─── Run modes ────────────────────────────────────────────────────────────
+ * EOA owner — full upgrade in one tx (testnet, or mainnet if owner is an EOA):
  *   forge script script/upgrades/20260506_VenueFacet_RemoveCreationFeeFloor.s.sol \
- *       --rpc-url $BASE_SEPOLIA_RPC -vvvv
+ *       --rpc-url $RPC_URL --private-key $OWNER_KEY --broadcast -vvvv
  *
- * Run (broadcast on testnet):
+ * Safe owner — deploy the facet from any hot wallet, get calldata for Safe:
+ *   SAFE_MODE=true forge script script/upgrades/20260506_VenueFacet_RemoveCreationFeeFloor.s.sol \
+ *       --rpc-url $BASE_RPC --private-key $DEPLOY_KEY --broadcast -vvvv
+ *
+ *   The console output will print:
+ *     === Safe Transaction Builder ===
+ *     To:    <Diamond>
+ *     Value: 0
+ *     Data:  0x1f931c1c…
+ *
+ *   Open https://app.safe.global → connect your Safe → Apps → Transaction
+ *   Builder. Paste those three fields into a new transaction. Sign with
+ *   Trezor (Safe supports Trezor natively). With a 1-of-N threshold the
+ *   single sig executes immediately.
+ *
+ * Simulation only — no broadcast (works for either mode):
  *   forge script script/upgrades/20260506_VenueFacet_RemoveCreationFeeFloor.s.sol \
- *       --rpc-url $BASE_SEPOLIA_RPC --broadcast --private-key $OWNER_KEY -vvvv
+ *       --rpc-url $RPC_URL --sender <owner-or-safe-addr> -vvvv
  *
- * Run (broadcast on mainnet):
- *   forge script script/upgrades/20260506_VenueFacet_RemoveCreationFeeFloor.s.sol \
- *       --rpc-url $BASE_RPC --broadcast --private-key $OWNER_KEY -vvvv
- *
- * After broadcast:
- *   - Verify the new VenueFacet on Basescan (forge verify-contract).
- *   - Update deployments/<network>/<new-version>.json with the new VenueFacet address.
+ * ─── After broadcast ──────────────────────────────────────────────────────
+ *   - Verify the new VenueFacet on the explorer:
+ *       forge verify-contract <new-facet-addr> src/facets/VenueFacet.sol:VenueFacet \
+ *           --chain <base|base-sepolia> --watch
+ *   - Snapshot the deployment:
+ *       node script/save-deployment.js <network> v1.1.0 "<notes>" \
+ *           --upgrade 20260506_VenueFacet_RemoveCreationFeeFloor.s.sol
  *   - Smoke-test by creating a venue with marketCreationFee = 0.
  */
 contract UpgradeVenueFacet is Script {
     function run() external {
         address diamond = vm.envAddress("DIAMOND_ADDRESS");
+        bool safeMode = vm.envOr("SAFE_MODE", false);
 
         vm.startBroadcast();
 
         // 1. Deploy the new VenueFacet implementation.
+        //    This step is non-privileged and can be broadcast from any EOA.
         VenueFacet newVenueFacet = new VenueFacet();
-        console.log("New VenueFacet deployed at:", address(newVenueFacet));
 
         // 2. Build the cuts.
         //    a) Replace all 11 pre-existing selectors so they point at the new bytecode
@@ -78,7 +100,33 @@ contract UpgradeVenueFacet is Script {
             functionSelectors: addSelectors
         });
 
-        // 3. Execute the cut. No initializer — there is no storage migration.
+        if (safeMode) {
+            // 3a. SAFE MODE — do NOT call diamondCut. Print the calldata so
+            //     the operator can submit it via the Safe UI (signed by the
+            //     Safe's owners, not by msg.sender of this script).
+            vm.stopBroadcast();
+
+            bytes memory cutCalldata = abi.encodeWithSelector(
+                IDiamondCut.diamondCut.selector,
+                cuts,
+                address(0),
+                hex""
+            );
+
+            console.log("");
+            console.log("=== Safe Transaction Builder ===");
+            console.log("To:    ", diamond);
+            console.log("Value:  0");
+            console.log("Data:");
+            console.logBytes(cutCalldata);
+            console.log("");
+            console.log("New VenueFacet deployed at:", address(newVenueFacet));
+            console.log("Paste the three fields above into the Safe's Transaction Builder app,");
+            console.log("then sign with Trezor and execute.");
+            return;
+        }
+
+        // 3b. EOA MODE — execute the cut directly. No initializer (no storage migration).
         IDiamondCut(diamond).diamondCut(cuts, address(0), "");
 
         vm.stopBroadcast();
