@@ -50,11 +50,13 @@ src/
 
 **Diamond:** [`0x025d086a62d93e24f3cb3f161612ca8e9530127d`](https://basescan.org/address/0x025d086a62d93e24f3cb3f161612ca8e9530127d)
 
-All protocol calls go through the Diamond proxy. Full facet manifest: [`deployments/base/v1.0.0.json`](./deployments/base/v1.0.0.json).
+All protocol calls go through the Diamond proxy. Full facet manifest: [`deployments/base/latest.json`](./deployments/base/latest.json).
 
-### Base Sepolia (testnet)
+Inspect the live facet → selector graph on [Louper](https://louper.dev/diamond/0x025d086A62d93E24F3CB3f161612CA8E9530127d?network=base) — the standard explorer for EIP-2535 diamonds. Basescan only shows the original verified source at the proxy address and is not diamond-aware; Louper enumerates the loupe and links to each facet's verified source.
 
-See [`deployments/base-sepolia/latest.json`](./deployments/base-sepolia/latest.json).
+### Base Sepolia (testnet, chainId 84532)
+
+**Diamond:** [`0x31a4126aec35b36d46dd371eb0f0d5b71e1c2292`](https://sepolia.basescan.org/address/0x31a4126aec35b36d46dd371eb0f0d5b71e1c2292) — full manifest in [`deployments/base-sepolia/latest.json`](./deployments/base-sepolia/latest.json), facet graph on [Louper](https://louper.dev/diamond/0x31a4126AEc35b36D46Dd371eb0F0d5b71e1C2292?network=base-sepolia).
 
 ## Build
 
