@@ -25,8 +25,12 @@ import {MarketRegistryData, MarketOracleData, MarketStatus, PriceMarket, FeedPro
  * @notice Pyth-specific admin, creation, and resolution for price markets.
  *
  *         Creation: captures an opening price from Pyth and creates a standard
- *         OddMaki market with caller-provided outcomes. UMA is configured as
- *         fallback — if Pyth resolution never happens, anyone can assert via UMA.
+ *         OddMaki market with caller-provided outcomes. The market's UMA reward
+ *         is forced to zero — price markets are Pyth-only by design and do not
+ *         escrow a UMA reward at creation. If Pyth resolution never fires (feed
+ *         deprecation, prolonged outage), the market can be invalidated via
+ *         {markPriceMarketInvalid} after a grace period and holders are refunded
+ *         pro-rata via a 50/50 CTF payout.
  *
  *         strikePrice is the unified reference price for resolution:
  *         - When caller passes strikePrice == 0: contract captures the current
@@ -57,6 +61,19 @@ contract PythResolutionFacet is ReentrancyGuard {
     );
 
     event PriceMarketResolvedPyth(uint256 indexed marketId, int64 finalPrice, int64 strikePrice, string outcome);
+
+    event PriceMarketInvalidated(uint256 indexed marketId, address indexed caller);
+
+    // ---- Errors ----
+
+    error GracePeriodNotElapsed();
+    error AssertionInProgress();
+
+    // ---- Constants ----
+
+    /// @notice Time after closeTime that must elapse before a price market can be invalidated.
+    ///         Gives Pyth resolution a wide window to fire before holders may force a 50/50 refund.
+    uint256 internal constant INVALIDATION_GRACE = 7 days;
 
     // ---- Admin ----
 
@@ -101,7 +118,8 @@ contract PythResolutionFacet is ReentrancyGuard {
     /// @param tickSize Orderbook tick size.
     /// @param collateralToken ERC20 collateral for trading.
     /// @param ancillaryData Title + resolution description.
-    /// @param liveness UMA liveness for fallback resolution (0 = venue default).
+    /// @param liveness UMA liveness stored on the oracle (unused under normal operation;
+    ///                 price markets resolve via Pyth and do not escrow a UMA reward).
     /// @param tags Optional market tags.
     /// @param resolutionWindow Seconds tolerance for Pyth timestamp (0 = default 60s).
     /// @param pythUpdateData Signed Pyth price update from Hermes (required for Up/Down, ignored for strike markets).
@@ -168,6 +186,21 @@ contract PythResolutionFacet is ReentrancyGuard {
             tags
         );
 
+        // 5b. Zero the UMA reward stored on the oracle.
+        //     LibMarketCreationService stores `venue.umaRewardAmount` in MarketOracleData.reward,
+        //     but `createPriceMarketPyth` deliberately does NOT escrow that amount from the creator
+        //     (unlike MarketsFacet.createMarket). If a price market ever falls back to UMA
+        //     assertion, `LibResolutionService.payStandaloneReward` would attempt to transfer
+        //     `oracle.reward` from the Diamond — funds the Diamond never held — and revert,
+        //     locking the market and the asserter's bond. Forcing reward = 0 here makes that
+        //     code path a safe no-op (the asserter still recovers their bond from UMA), and is
+        //     the on-chain expression of "price markets are Pyth-only; UMA is not a fallback."
+        //     If Pyth resolution fails permanently, holders use {markPriceMarketInvalid} for a
+        //     50/50 refund.
+        LibMarketOracleStorage.getMarketOracleData(
+            LibMarketRegistryStorage.getMarketRegistryData(marketId).questionId
+        ).reward = 0;
+
         // 6. Store price market overlay
         uint256 effectiveWindow =
             resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
@@ -193,8 +226,9 @@ contract PythResolutionFacet is ReentrancyGuard {
     // ---- Resolution ----
 
     /// @notice Resolve a price market using Pyth price data. Anyone can call.
-    ///         If this is never called, the market falls back to UMA —
-    ///         anyone can submit a UMA assertion through the existing flow.
+    ///         If Pyth resolution becomes permanently impossible (feed
+    ///         deprecation, prolonged outage), holders can fall back to
+    ///         {markPriceMarketInvalid} after a grace period.
     ///         finalPrice is compared against strikePrice (which holds the
     ///         captured open price for standard Up/Down markets).
     /// @param marketId The OddMaki market ID.
@@ -248,5 +282,47 @@ contract PythResolutionFacet is ReentrancyGuard {
         LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);
 
         emit PriceMarketResolvedPyth(marketId, finalPrice, pm.strikePrice, outcome);
+    }
+
+    // ---- Invalidation ----
+
+    /// @notice Mark a price market as Invalid and refund holders 50/50 via the CTF.
+    ///         Permissionless escape hatch for price markets that never resolve via Pyth
+    ///         (e.g. the feed was deprecated by the publisher, or Hermes was unable to serve
+    ///         a VAA in the resolution window for a sustained period). Callable by anyone
+    ///         once {INVALIDATION_GRACE} has elapsed past closeTime.
+    ///
+    ///         Reports payouts = [1, 1] to Gnosis CTF: every YES position and every NO
+    ///         position redeems for half of the underlying collateral, so traders recover
+    ///         their cost basis pro-rata regardless of which side they were on.
+    /// @param marketId The price market to invalidate.
+    function markPriceMarketInvalid(uint256 marketId) external nonReentrant {
+        LibPriceMarketValidator.requireIsPriceMarket(marketId);
+        LibPriceMarketValidator.requireNotResolved(marketId);
+
+        PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
+        if (block.timestamp < pm.closeTime + INVALIDATION_GRACE) revert GracePeriodNotElapsed();
+
+        MarketRegistryData storage reg = LibMarketRegistryStorage.getMarketRegistryData(marketId);
+        if (reg.status != MarketStatus.Active) revert LibPriceMarketValidator.MarketNotActive();
+
+        // Refuse to race a live UMA assertion on legacy markets. Once an assertion is
+        // outstanding the question is locked at the UMA layer; the asserter (or anyone)
+        // should settle it normally — with reward forced to 0 above, that path is safe and
+        // resolves the market through the standard route.
+        if (LibMarketOracleStorage.getMarketOracleData(reg.questionId).activeAssertionId != bytes32(0)) {
+            revert AssertionInProgress();
+        }
+
+        // 50/50 invalid payout. CTF.reportPayouts normalises [1, 1] into half-and-half
+        // redeem rates so every outcome token redeems for `collateral / 2`.
+        uint256[] memory payouts = new uint256[](2);
+        payouts[0] = 1;
+        payouts[1] = 1;
+        LibResolutionService.resolveMarket(marketId, payouts, "INVALID");
+
+        pm.resolved = true;
+
+        emit PriceMarketInvalidated(marketId, msg.sender);
     }
 }

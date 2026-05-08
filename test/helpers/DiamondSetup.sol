@@ -279,13 +279,14 @@ contract DiamondSetup is Test {
         });
     }
 
-    /// @dev Staleness admin selectors added in a separate diamondCut call after Diamond
-    ///      construction. Bundling all 6 PythResolutionFacet selectors into the constructor
-    ///      cuts tips the Yul IR optimizer into stack-too-deep under via_ir.
+    /// @dev PythResolutionFacet tail selectors added in a separate diamondCut call after
+    ///      Diamond construction. Bundling all 7 PythResolutionFacet selectors into the
+    ///      constructor cuts tips the Yul IR optimizer into stack-too-deep under via_ir.
     function _pythStalenessSelectors() private pure returns (bytes4[] memory selectors) {
-        selectors = new bytes4[](2);
+        selectors = new bytes4[](3);
         selectors[0] = PythResolutionFacet.setOpenMaxStaleness.selector;
         selectors[1] = PythResolutionFacet.getOpenMaxStaleness.selector;
+        selectors[2] = PythResolutionFacet.markPriceMarketInvalid.selector;
     }
 
     /// @notice Create a default public venue for test setup. Returns venueId (1 on first call).
