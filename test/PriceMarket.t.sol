@@ -56,6 +56,8 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 resolutionWindow
     );
     event PriceMarketResolvedPyth(uint256 indexed marketId, int64 finalPrice, int64 strikePrice, string outcome);
+    event PriceMarketInvalidated(uint256 indexed marketId, address indexed caller);
+    event MarketResolved(uint256 indexed marketId, bytes32 indexed questionId, string outcome);
 
     function setUp() public {
         diamond = deployDiamond(address(this));
@@ -871,5 +873,155 @@ contract PriceMarketTest is Test, DiamondSetup {
         (, , , , , int64 finalPrice, , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
         assertTrue(resolved);
         assertEq(finalPrice, earlyPrice);
+    }
+
+    // ======================================================================
+    // PYTH-ONLY ENFORCEMENT — oracle.reward forced to 0 at creation
+    // ======================================================================
+
+    /// @notice Create a venue with a non-zero `umaRewardAmount` and confirm that the
+    ///         price market created in it has `oracle.reward == 0`. The frontend
+    ///         must not have to escrow a UMA reward for price markets, and the
+    ///         post-write in createPriceMarketPyth is what enforces that on-chain.
+    function test_createPriceMarketPyth_zeroesOracleReward() public {
+        uint256 rewardingVenueId = VenueFacet(address(diamond)).createVenue(
+            "Rewarding Venue",
+            "",
+            address(0),
+            address(0),
+            address(this),
+            100, // venueFeeBps
+            0, // creatorFeeBps
+            1e16, // defaultTickSize
+            5e6, // marketCreationFee
+            5e6, // umaRewardAmount — would have been escrowed for a UMA-resolved market
+            1e6 // umaMinBond
+        );
+
+        // Fund the creator's USDC and approve only the creation fee.
+        // Crucially: NOT approving the UMA reward. This must succeed, proving the
+        // facet does not pull the reward at creation.
+        collateral.mint(CREATOR, 5e6);
+        vm.prank(CREATOR);
+        collateral.approve(address(diamond), 5e6);
+
+        bytes[] memory pythData = _buildPythUpdateData(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
+        uint256 closeTime = block.timestamp + DURATION;
+
+        vm.prank(CREATOR);
+        uint256 marketId = PythResolutionFacet(address(diamond)).createPriceMarketPyth{value: 1}(
+            rewardingVenueId,
+            ETH_USD_FEED,
+            int64(0),
+            closeTime,
+            _upDownOutcomes(),
+            TICK_SIZE,
+            address(collateral),
+            "q:title:ETH Up or Down,description:Pyth-only enforcement test",
+            0,
+            new bytes32[](0),
+            0,
+            pythData
+        );
+
+        // The reward stored on the oracle must be zero, regardless of venue config.
+        MarketOracleData memory oracle = MarketsFacet(address(diamond)).getMarketOracleData(marketId);
+        assertEq(oracle.reward, 0, "price-market oracle.reward must be 0");
+    }
+
+    // ======================================================================
+    // INVALIDATION ESCAPE HATCH (markPriceMarketInvalid)
+    // ======================================================================
+
+    /// @notice Helper: returns the constant grace period that the facet hardcodes.
+    function _invalidationGrace() internal pure returns (uint256) {
+        return 7 days;
+    }
+
+    function test_markPriceMarketInvalid_happyPath() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+
+        // Warp past closeTime + grace period.
+        vm.warp(closeTime + _invalidationGrace());
+
+        // Fetch questionId for event matching.
+        MarketRegistryData memory reg = MarketsFacet(address(diamond)).getMarketRegistryData(marketId);
+
+        vm.expectEmit(true, true, false, true, address(diamond));
+        emit MarketResolved(marketId, reg.questionId, "INVALID");
+        vm.expectEmit(true, true, false, false, address(diamond));
+        emit PriceMarketInvalidated(marketId, address(this));
+
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+
+        // Market is Resolved + price-market overlay marked resolved.
+        MarketRegistryData memory regAfter = MarketsFacet(address(diamond)).getMarketRegistryData(marketId);
+        assertEq(uint256(regAfter.status), uint256(MarketStatus.Resolved));
+        (, , , , , , , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertTrue(resolved);
+    }
+
+    function test_markPriceMarketInvalid_revertsBeforeGrace() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+
+        // One second short of the grace deadline.
+        vm.warp(closeTime + _invalidationGrace() - 1);
+
+        vm.expectRevert(PythResolutionFacet.GracePeriodNotElapsed.selector);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+    }
+
+    function test_markPriceMarketInvalid_revertsBeforeCloseTime() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        // Don't warp at all — closeTime is in the future.
+
+        vm.expectRevert(PythResolutionFacet.GracePeriodNotElapsed.selector);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+    }
+
+    function test_markPriceMarketInvalid_revertsAlreadyResolvedViaPyth() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+
+        // Resolve via Pyth at closeTime, then warp past grace and try to invalidate.
+        vm.warp(closeTime);
+        _resolvePriceMarket(marketId, OPEN_PRICE + 100);
+        vm.warp(closeTime + _invalidationGrace() + 1);
+
+        vm.expectRevert(LibPriceMarketValidator.PriceMarketAlreadyResolved.selector);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+    }
+
+    function test_markPriceMarketInvalid_revertsTwice() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        vm.warp(closeTime + _invalidationGrace());
+
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+
+        vm.expectRevert(LibPriceMarketValidator.PriceMarketAlreadyResolved.selector);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+    }
+
+    function test_markPriceMarketInvalid_revertsNotPriceMarket() public {
+        // Pass a marketId that has never been created. `requireIsPriceMarket` reverts.
+        vm.expectRevert(LibPriceMarketValidator.NotPriceMarket.selector);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(999);
+    }
+
+    function test_markPriceMarketInvalid_callableByAnyone() public {
+        uint256 marketId = _createPriceMarket(OPEN_PRICE);
+        (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        vm.warp(closeTime + _invalidationGrace());
+
+        // A random address (not creator, not operator) can invalidate.
+        address randomCaller = address(0xBEEF);
+        vm.prank(randomCaller);
+        PythResolutionFacet(address(diamond)).markPriceMarketInvalid(marketId);
+
+        (, , , , , , , bool resolved, , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertTrue(resolved);
     }
 }
