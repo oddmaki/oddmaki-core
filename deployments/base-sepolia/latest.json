@@ -26,7 +26,8 @@
     "PythResolutionFacet": "0x6cbc86badf75daafbada3cdc58178e4342b103c4",
     "BatchOrdersFacet": "0x7eb52ad008fd89f9f835efc6dea56548987a8516",
     "OddMaki": "0x31a4126aec35b36d46dd371eb0f0d5b71e1c2292",
-    "USDC": "0x1d3caa0156e8e573814b78766ba7958d7e11488b",
+    "USDC": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "MockUSDC": "0x1d3caa0156e8e573814b78766ba7958d7e11488b",
     "ConditionalTokens": "0x7364747372Ac4a175B5326f5B2C9CB1C271d32e8",
     "UmaOracle": "0x45375b8e995fa2811ec184e3b6a3158a770a01e8"
   },
@@ -35,7 +36,7 @@
     "ethFaucet": "https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet",
     "explorer": "https://sepolia.basescan.org"
   },
-  "notes": "Pyth only-resolution for price markets",
+  "notes": "Pyth only-resolution for price markets. Canonical collateral switched to Circle's Base Sepolia USDC; MockUSDC retained for legacy markets only.",
   "upgrade": {
     "previousVersion": "1.1.0",
     "script": "20260507_PythResolutionFacet_PythOnlyAndInvalidation.s.sol",
