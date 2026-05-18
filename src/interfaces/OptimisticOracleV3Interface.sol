@@ -75,4 +75,12 @@ interface OptimisticOracleV3Interface {
     /// @notice Check whether an assertion has been settled.
     /// @param assertionId the assertion to check.
     function isSettled(bytes32 assertionId) external view returns (bool settled);
+
+    /// @notice Dispute an outstanding assertion before its liveness expires.
+    ///         The disputer bonds the same currency/amount as the asserter and is
+    ///         refunded (with the asserter's bond minus protocol burn) if the DVM
+    ///         rules in their favor.
+    /// @param assertionId the assertion to dispute.
+    /// @param disputer the address that receives the bond at settlement.
+    function disputeAssertion(bytes32 assertionId, address disputer) external;
 }
