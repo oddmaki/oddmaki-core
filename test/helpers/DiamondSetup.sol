@@ -86,11 +86,12 @@ contract DiamondSetup is Test {
         DiamondArgs memory args = DiamondArgs({owner: owner, init: address(0), initCalldata: ""});
         diamond = new OddMaki(cuts, args);
 
-        // Staleness admin added via a follow-up cut — see `_pythStalenessSelectors` docstring.
-        IDiamond.FacetCut[] memory stalenessCuts = new IDiamond.FacetCut[](1);
-        stalenessCuts[0] = _cut(address(_pythResolutionFacet), _pythStalenessSelectors());
+        // PythResolutionFacet tail selectors added via a follow-up cut —
+        // see `_pythTailSelectors` docstring.
+        IDiamond.FacetCut[] memory tailCuts = new IDiamond.FacetCut[](1);
+        tailCuts[0] = _cut(address(_pythResolutionFacet), _pythTailSelectors());
         vm.prank(owner);
-        DiamondCutFacet(address(diamond)).diamondCut(stalenessCuts, address(0), "");
+        DiamondCutFacet(address(diamond)).diamondCut(tailCuts, address(0), "");
     }
 
     function _buildCuts() internal view returns (IDiamond.FacetCut[] memory cuts) {
@@ -280,13 +281,11 @@ contract DiamondSetup is Test {
     }
 
     /// @dev PythResolutionFacet tail selectors added in a separate diamondCut call after
-    ///      Diamond construction. Bundling all 7 PythResolutionFacet selectors into the
+    ///      Diamond construction. Bundling all 5 PythResolutionFacet selectors into the
     ///      constructor cuts tips the Yul IR optimizer into stack-too-deep under via_ir.
-    function _pythStalenessSelectors() private pure returns (bytes4[] memory selectors) {
-        selectors = new bytes4[](3);
-        selectors[0] = PythResolutionFacet.setOpenMaxStaleness.selector;
-        selectors[1] = PythResolutionFacet.getOpenMaxStaleness.selector;
-        selectors[2] = PythResolutionFacet.markPriceMarketInvalid.selector;
+    function _pythTailSelectors() private pure returns (bytes4[] memory selectors) {
+        selectors = new bytes4[](1);
+        selectors[0] = PythResolutionFacet.markPriceMarketInvalid.selector;
     }
 
     /// @notice Create a default public venue for test setup. Returns venueId (1 on first call).

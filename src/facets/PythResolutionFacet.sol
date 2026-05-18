@@ -4,7 +4,6 @@
 pragma solidity 0.8.28;
 
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
-import {IPyth} from "lib/pyth-sdk-solidity/IPyth.sol";
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
@@ -24,30 +23,40 @@ import {MarketRegistryData, MarketOracleData, MarketStatus, PriceMarket, FeedPro
  * @author OddMaki Protocol
  * @notice Pyth-specific admin, creation, and resolution for price markets.
  *
- *         Creation: captures an opening price from Pyth and creates a standard
- *         OddMaki market with caller-provided outcomes. The market's UMA reward
- *         is forced to zero — price markets are Pyth-only by design and do not
- *         escrow a UMA reward at creation. If Pyth resolution never fires (feed
- *         deprecation, prolonged outage), the market can be invalidated via
- *         {markPriceMarketInvalid} after a grace period and holders are refunded
- *         pro-rata via a 50/50 CTF payout.
+ *         Creation creates a standard OddMaki market and stores a price-market overlay.
+ *         No Pyth interaction happens at creation — no VAA submission, no fee, no
+ *         opening-price capture. The market's UMA reward is forced to zero because
+ *         price markets are Pyth-only by design and do not escrow a UMA reward at
+ *         creation. If Pyth resolution never fires (feed deprecation, prolonged
+ *         outage), the market can be invalidated via {markPriceMarketInvalid} after
+ *         a grace period and holders are refunded pro-rata via a 50/50 CTF payout.
  *
- *         strikePrice is the unified reference price for resolution:
- *         - When caller passes strikePrice == 0: contract captures the current
- *           Pyth price and stores it as strikePrice (standard Up/Down market).
- *         - When caller passes strikePrice > 0: explicit target price is stored.
+ *         Three creation shapes share a single function:
+ *         - `strikePrice > 0`                    — explicit-strike market. `openTime`
+ *                                                  is ignored and stored as `block.timestamp`.
+ *                                                  Resolution compares the final price
+ *                                                  against the stored strike.
+ *         - `strikePrice == 0 && openTime == 0`  — immediate Up/Down market. Open
+ *                                                  price is captured at resolution from
+ *                                                  the earliest VAA in
+ *                                                  `[creationTime, creationTime + window]`.
+ *         - `strikePrice == 0 && openTime > 0`   — scheduled Up/Down market. Open
+ *                                                  price is captured at resolution from
+ *                                                  the earliest VAA in
+ *                                                  `[openTime, openTime + window]`.
  *
- *         Resolution: fetches closing price from Pyth within a time window around
- *         closeTime. If finalPrice >= strikePrice → outcomes[0] wins, else
- *         outcomes[1] wins. Uses the same LibResolutionService.resolveMarket() as UMA
- *         resolution, ensuring double-resolution is prevented by the market status guard.
+ *         Resolution fetches the closing price from Pyth within a window around
+ *         closeTime and, for deferred markets, also captures the open price from the
+ *         open window. The resolver submits both windows' VAAs in a single
+ *         `pythUpdateData` array — out-of-range entries are skipped per window.
+ *         If finalPrice >= strikePrice → outcomes[0] wins, else outcomes[1] wins.
+ *         Uses the same LibResolutionService.resolveMarket() as UMA resolution,
+ *         ensuring double-resolution is prevented by the market status guard.
  */
 contract PythResolutionFacet is ReentrancyGuard {
     // ---- Events ----
 
     event PythContractUpdated(address indexed pythContract);
-
-    event OpenMaxStalenessUpdated(uint256 openMaxStaleness);
 
     event PriceMarketCreatedPyth(
         uint256 indexed marketId,
@@ -60,7 +69,13 @@ contract PythResolutionFacet is ReentrancyGuard {
         uint256 resolutionWindow
     );
 
-    event PriceMarketResolvedPyth(uint256 indexed marketId, int64 finalPrice, int64 strikePrice, string outcome);
+    event PriceMarketResolvedPyth(
+        uint256 indexed marketId,
+        int64 finalPrice,
+        int64 strikePrice,
+        uint256 openPriceTime,
+        string outcome
+    );
 
     event PriceMarketInvalidated(uint256 indexed marketId, address indexed caller);
 
@@ -90,30 +105,19 @@ contract PythResolutionFacet is ReentrancyGuard {
         return LibPriceMarketStorage.getPythContract();
     }
 
-    /// @notice Set the opening-price staleness window (seconds). Diamond owner only.
-    ///         Pass 0 to fall back to the built-in default. Deliberately not venue-configurable —
-    ///         a loose value would reintroduce the stale-VAA attack surface at market creation.
-    function setOpenMaxStaleness(uint256 openMaxStaleness) external {
-        LibDiamond.enforceIsContractOwner();
-        LibPriceMarketStorage.getStorage().openMaxStaleness = openMaxStaleness;
-        emit OpenMaxStalenessUpdated(openMaxStaleness);
-    }
-
-    /// @notice Get the effective opening-price staleness window in seconds.
-    function getOpenMaxStaleness() external view returns (uint256) {
-        return LibPriceMarketStorage.getOpenMaxStaleness();
-    }
-
     // ---- Creation ----
 
-    /// @notice Create a price market with Pyth as the opening-price oracle.
-    ///         When strikePrice == 0, the current Pyth price is used as the
-    ///         reference price (standard Up/Down). When strikePrice > 0, the
-    ///         explicit target price is stored (strike market).
+    /// @notice Create a price market resolved by Pyth.
     /// @param venueId Venue this market belongs to.
     /// @param pythFeedId Pyth price feed ID (e.g., ETH/USD).
-    /// @param strikePrice Target price for resolution (0 = use current Pyth price).
-    /// @param closeTime Absolute close timestamp (must be 300..86400s from now).
+    /// @param strikePrice Target price for resolution. 0 = capture open price at resolution
+    ///                    from Hermes VAAs in the open window (Up/Down). > 0 = explicit
+    ///                    strike (Above/Below).
+    /// @param openTime When the market opens. 0 = immediate (set to block.timestamp).
+    ///                 > 0 = scheduled, must be strictly in the future. For explicit-strike
+    ///                 markets this is ignored and stored as block.timestamp.
+    /// @param closeTime Absolute close timestamp. Must be strictly after the
+    ///                  effective open time. No protocol-imposed min/max duration.
     /// @param outcomes Market outcome labels (must be length 2, e.g. ["Up", "Down"]).
     /// @param tickSize Orderbook tick size.
     /// @param collateralToken ERC20 collateral for trading.
@@ -122,12 +126,12 @@ contract PythResolutionFacet is ReentrancyGuard {
     ///                 price markets resolve via Pyth and do not escrow a UMA reward).
     /// @param tags Optional market tags.
     /// @param resolutionWindow Seconds tolerance for Pyth timestamp (0 = default 60s).
-    /// @param pythUpdateData Signed Pyth price update from Hermes (required for Up/Down, ignored for strike markets).
     /// @return marketId The allocated market ID.
     function createPriceMarketPyth(
         uint256 venueId,
         bytes32 pythFeedId,
         int64 strikePrice,
+        uint256 openTime,
         uint256 closeTime,
         string[] calldata outcomes,
         uint256 tickSize,
@@ -135,14 +139,21 @@ contract PythResolutionFacet is ReentrancyGuard {
         bytes calldata ancillaryData,
         uint64 liveness,
         bytes32[] calldata tags,
-        uint256 resolutionWindow,
-        bytes[] calldata pythUpdateData
-    ) external payable nonReentrant returns (uint256 marketId) {
+        uint256 resolutionWindow
+    ) external nonReentrant returns (uint256 marketId) {
         // 1. Validate price market params
         LibPriceMarketValidator.requirePythConfigured();
-        LibPriceMarketValidator.requireValidCloseTime(closeTime);
-        LibPriceMarketValidator.requireValidResolutionWindow(resolutionWindow);
         if (strikePrice < 0) revert LibPriceMarketValidator.ZeroStrikePrice();
+        LibPriceMarketValidator.requireValidOpenTime(openTime);
+        uint256 effectiveOpenTime = openTime == 0 ? block.timestamp : openTime;
+        // Strike markets ignore openTime — resolution only ever reads strikePrice and
+        // the close window. Pin effectiveOpenTime to block.timestamp so the stored
+        // value matches the documented semantics for that branch.
+        if (strikePrice > 0) {
+            effectiveOpenTime = block.timestamp;
+        }
+        LibPriceMarketValidator.requireValidCloseTime(effectiveOpenTime, closeTime);
+        LibPriceMarketValidator.requireValidResolutionWindow(resolutionWindow);
 
         // 2. Standard market creation guards (same as MarketsFacet.createMarket)
         LibVenueValidator.requireActiveVenue(venueId);
@@ -152,24 +163,8 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 3. Collect market creation fee
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
 
-        // 4. Get price data based on market type
-        int64 effectiveStrike;
-        int32 priceExpo;
-        uint256 pythFee;
-        uint256 openPriceTime;
-
-        if (strikePrice > 0) {
-            // Strike market: explicit target price, only need priceExpo from feed (no update, no fee)
-            priceExpo = LibPriceMarketService.getFeedExponent(pythFeedId);
-            effectiveStrike = strikePrice;
-            pythFee = 0;
-        } else {
-            // Up/Down market: capture the opening price from the submitted VAA.
-            int64 openPrice;
-            (openPrice, priceExpo, pythFee, openPriceTime) =
-                LibPriceMarketService.captureOpenPrice(pythFeedId, pythUpdateData, msg.value);
-            effectiveStrike = openPrice;
-        }
+        // 4. Read priceExpo from the feed (no VAA submission, no Pyth fee at creation).
+        int32 priceExpo = LibPriceMarketService.getFeedExponent(pythFeedId);
 
         // 5. Create standard market via shared service
         marketId = LibMarketCreationService.createMarket(
@@ -208,31 +203,33 @@ contract PythResolutionFacet is ReentrancyGuard {
         PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
         pm.feedId = pythFeedId;
         pm.feedProvider = FeedProvider.PYTH;
-        pm.openTime = block.timestamp;
+        pm.openTime = effectiveOpenTime;
         pm.closeTime = closeTime;
         pm.priceExpo = priceExpo;
         pm.resolutionWindow = effectiveWindow;
-        pm.strikePrice = effectiveStrike;
-        pm.openPriceTime = openPriceTime;
-
-        // 7. Refund excess ETH (for Up/Down markets: refund beyond Pyth fee; for strike: refund all)
-        LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);
+        pm.strikePrice = strikePrice;
+        // openPriceTime stays 0; the resolver fills it for deferred markets when the
+        // open VAA is captured at resolution time.
 
         emit PriceMarketCreatedPyth(
-            marketId, venueId, pythFeedId, effectiveStrike, priceExpo, block.timestamp, closeTime, effectiveWindow
+            marketId, venueId, pythFeedId, strikePrice, priceExpo, effectiveOpenTime, closeTime, effectiveWindow
         );
     }
 
     // ---- Resolution ----
 
     /// @notice Resolve a price market using Pyth price data. Anyone can call.
-    ///         If Pyth resolution becomes permanently impossible (feed
-    ///         deprecation, prolonged outage), holders can fall back to
-    ///         {markPriceMarketInvalid} after a grace period.
-    ///         finalPrice is compared against strikePrice (which holds the
-    ///         captured open price for standard Up/Down markets).
+    ///         For deferred Up/Down markets (`strikePrice == 0`), the resolver submits
+    ///         VAAs for both the open window `[openTime, openTime + window]` and the
+    ///         close window `[closeTime, closeTime + window]` in a single
+    ///         `pythUpdateData` array. The facet picks the earliest in-range VAA per
+    ///         window. For explicit-strike markets, only close-window VAAs are needed.
+    ///         If Pyth resolution becomes permanently impossible (feed deprecation,
+    ///         prolonged outage), holders can fall back to {markPriceMarketInvalid}
+    ///         after a grace period.
     /// @param marketId The OddMaki market ID.
-    /// @param pythUpdateData Signed Pyth price update from Hermes at closeTime.
+    /// @param pythUpdateData Signed Pyth price updates from Hermes covering the
+    ///                       open and/or close windows as appropriate.
     function resolvePriceMarketPyth(uint256 marketId, bytes[] calldata pythUpdateData) external payable nonReentrant {
         // 1. Validate
         LibPriceMarketValidator.requireIsPriceMarket(marketId);
@@ -245,43 +242,54 @@ contract PythResolutionFacet is ReentrancyGuard {
 
         PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
 
-        // 2. Get closing price from Pyth within the resolution window
-        address pythContract = LibPriceMarketStorage.getPythContract();
-        IPyth pyth = IPyth(pythContract);
-        uint256 pythFee = pyth.getUpdateFee(pythUpdateData);
-        if (msg.value < pythFee) revert LibPriceMarketValidator.InsufficientPythFee();
-
         // Defense-in-depth: cap the effective window at MAX_RESOLUTION_WINDOW even if
-        // the market stored a larger value (e.g. a legacy market created before the
-        // creation-time bound was enforced). Creator cannot widen the window here.
+        // the market stored a larger value (legacy markets created before the bound
+        // was enforced). Creator cannot widen the window at resolution time.
         uint256 maxWindow = LibPriceMarketStorage.MAX_RESOLUTION_WINDOW;
         uint256 effectiveWindow = pm.resolutionWindow > maxWindow ? maxWindow : pm.resolutionWindow;
 
-        // Prefer the earliest in-range VAA rather than the caller's cherry-pick:
-        // LibPriceMarketService parses each submitted update individually and keeps
-        // the one with the smallest publishTime. The resolver still chooses which
-        // VAAs to submit, but cannot reorder the array to bias which price is selected.
-        int64 finalPrice =
-            LibPriceMarketService.pickEarliestClosePrice(pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
+        uint256 totalFee;
 
-        // 3. Compute outcome against strikePrice
+        // 2. Deferred markets: capture the open price now. If no in-range open VAA
+        //    is available, resolution reverts with `NoOpenPriceInWindow` and the
+        //    market eventually routes through `markPriceMarketInvalid` after the
+        //    standard grace period past closeTime.
+        if (pm.strikePrice == 0) {
+            (int64 openPrice, uint64 openPubTime, bool openFound, uint256 openFee) = LibPriceMarketService
+                .pickEarliestInWindow(pm.feedId, pythUpdateData, pm.openTime, effectiveWindow);
+            if (!openFound) revert LibPriceMarketValidator.NoOpenPriceInWindow();
+
+            pm.strikePrice = openPrice;
+            pm.openPriceTime = openPubTime;
+            totalFee += openFee;
+        }
+
+        // 3. Capture the close price from the same submitted array.
+        (int64 finalPrice,, bool closeFound, uint256 closeFee) =
+            LibPriceMarketService.pickEarliestInWindow(pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
+        if (!closeFound) revert LibPriceMarketValidator.NoClosePriceInWindow();
+        totalFee += closeFee;
+
+        if (msg.value < totalFee) revert LibPriceMarketValidator.InsufficientPythFee();
+
+        // 4. Compute outcome against strikePrice (now populated either way)
         MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(reg.questionId);
         bool firstOutcomeWins = finalPrice >= pm.strikePrice;
         uint256[] memory payouts = new uint256[](2);
         payouts[firstOutcomeWins ? 0 : 1] = 1;
         string memory outcome = firstOutcomeWins ? oracle.outcomes[0] : oracle.outcomes[1];
 
-        // 4. Resolve via shared resolution path (emits MarketResolved)
+        // 5. Resolve via shared resolution path (emits MarketResolved)
         LibResolutionService.resolveMarket(marketId, payouts, outcome);
 
-        // 5. Mark price market overlay as resolved
+        // 6. Mark price market overlay as resolved
         pm.finalPrice = finalPrice;
         pm.resolved = true;
 
-        // 6. Refund excess ETH
-        LibPriceMarketService.refundExcess(pythFee, msg.value, msg.sender);
+        // 7. Refund excess ETH
+        LibPriceMarketService.refundExcess(totalFee, msg.value, msg.sender);
 
-        emit PriceMarketResolvedPyth(marketId, finalPrice, pm.strikePrice, outcome);
+        emit PriceMarketResolvedPyth(marketId, finalPrice, pm.strikePrice, pm.openPriceTime, outcome);
     }
 
     // ---- Invalidation ----
@@ -291,6 +299,10 @@ contract PythResolutionFacet is ReentrancyGuard {
     ///         (e.g. the feed was deprecated by the publisher, or Hermes was unable to serve
     ///         a VAA in the resolution window for a sustained period). Callable by anyone
     ///         once {INVALIDATION_GRACE} has elapsed past closeTime.
+    ///
+    ///         For deferred Up/Down markets, a missing open-window VAA also routes through
+    ///         here: resolution would revert with `NoOpenPriceInWindow` indefinitely, and
+    ///         once `closeTime + INVALIDATION_GRACE` elapses, anyone can invalidate.
     ///
     ///         Reports payouts = [1, 1] to Gnosis CTF: every YES position and every NO
     ///         position redeems for half of the underlying collateral, so traders recover

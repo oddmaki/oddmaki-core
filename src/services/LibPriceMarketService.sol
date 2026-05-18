@@ -10,40 +10,10 @@ import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol
 
 /**
  * @title LibPriceMarketService
- * @notice Business logic for Pyth-powered price markets: opening price capture
- *         and ETH refund handling.
+ * @notice Business logic for Pyth-powered price markets: deterministic price selection
+ *         from a window of submitted VAAs, ETH refund handling, and feed metadata reads.
  */
 library LibPriceMarketService {
-    /// @notice Capture the opening price by parsing the submitted VAA directly.
-    ///         Uses parsePriceFeedUpdates (not updatePriceFeeds + getPriceUnsafe) so the
-    ///         opening price comes straight from the submitted update, with its publishTime
-    ///         enforced within [block.timestamp - OPEN_MAX_STALENESS, block.timestamp + OPEN_FUTURE_SKEW].
-    ///         This closes the stale-price exploit where a historical VAA — merely newer than
-    ///         Pyth's stored value — could pin an advantageous opening price at market creation.
-    function captureOpenPrice(bytes32 pythFeedId, bytes[] calldata pythUpdateData, uint256 msgValue)
-        internal
-        returns (int64 openPrice, int32 priceExpo, uint256 pythFee, uint256 openPriceTime)
-    {
-        address pythContract = LibPriceMarketStorage.getPythContract();
-        IPyth pyth = IPyth(pythContract);
-        pythFee = pyth.getUpdateFee(pythUpdateData);
-        if (msgValue < pythFee) revert LibPriceMarketValidator.InsufficientPythFee();
-
-        uint256 maxStaleness = LibPriceMarketStorage.getOpenMaxStaleness();
-        uint64 minPub = uint64(block.timestamp > maxStaleness ? block.timestamp - maxStaleness : 0);
-        uint64 maxPub = uint64(block.timestamp) + LibPriceMarketStorage.OPEN_FUTURE_SKEW;
-
-        bytes32[] memory feedIds = new bytes32[](1);
-        feedIds[0] = pythFeedId;
-
-        PythStructs.PriceFeed[] memory feeds =
-            pyth.parsePriceFeedUpdates{value: pythFee}(pythUpdateData, feedIds, minPub, maxPub);
-
-        openPrice = feeds[0].price.price;
-        priceExpo = feeds[0].price.expo;
-        openPriceTime = feeds[0].price.publishTime;
-    }
-
     /// @notice Read the price exponent for a Pyth feed without updating.
     ///         Uses getPriceUnsafe which returns the last stored data (no fee required).
     ///         The expo field is fixed per feed and always valid regardless of staleness.
@@ -54,7 +24,7 @@ library LibPriceMarketService {
         return price.expo;
     }
 
-    /// @notice Refund excess ETH sent beyond the Pyth fee.
+    /// @notice Refund excess ETH sent beyond the Pyth fees actually consumed.
     function refundExcess(uint256 fee, uint256 msgValue, address recipient) internal {
         uint256 refund = msgValue - fee;
         if (refund > 0) {
@@ -64,25 +34,39 @@ library LibPriceMarketService {
     }
 
     /// @notice Parse each submitted VAA individually and return the price whose
-    ///         publishTime is the smallest value in `[closeTime, closeTime + window]`.
+    ///         publishTime is the smallest value in `[fromTime, fromTime + window]`.
     ///         Selecting the earliest in-range VAA prevents resolvers from biasing the
     ///         chosen price by reordering `pythUpdateData`.
-    ///         Reverts if no submitted VAA falls in range (propagated from Pyth).
-    function pickEarliestClosePrice(
+    ///
+    ///         For deferred Up/Down markets the same submitted array carries VAAs for
+    ///         two windows (open and close). VAAs outside the window-under-test cause
+    ///         `parsePriceFeedUpdates` to revert with `PriceFeedNotFoundWithinRange` —
+    ///         that revert is caught and the VAA is skipped, so out-of-range entries
+    ///         contribute nothing to this window's selection (they're picked up by the
+    ///         caller's second invocation against the other window). On a caught
+    ///         revert the forwarded `singleFee` is rolled back with the call and
+    ///         remains in the Diamond's balance; the caller's `refundExcess` returns
+    ///         any unspent value to the resolver.
+    ///
+    ///         Returns `(price, publishTime, found, feeConsumed)`. When `found == false`
+    ///         no submitted VAA fell in `[fromTime, fromTime + window]` — the caller
+    ///         must revert with a context-specific error (`NoOpenPriceInWindow` /
+    ///         `NoClosePriceInWindow`).
+    function pickEarliestInWindow(
         bytes32 pythFeedId,
         bytes[] calldata pythUpdateData,
-        uint256 closeTime,
+        uint256 fromTime,
         uint256 window
-    ) internal returns (int64 finalPrice) {
-        if (pythUpdateData.length == 0) revert LibPriceMarketValidator.NoValidPriceUpdate();
+    ) internal returns (int64 finalPrice, uint64 finalPublishTime, bool found, uint256 feeConsumed) {
+        if (pythUpdateData.length == 0) return (0, 0, false, 0);
 
         address pythContract = LibPriceMarketStorage.getPythContract();
         IPyth pyth = IPyth(pythContract);
 
         bytes32[] memory feedIds = new bytes32[](1);
         feedIds[0] = pythFeedId;
-        uint64 minPT = uint64(closeTime);
-        uint64 maxPT = uint64(closeTime + window);
+        uint64 minPT = uint64(fromTime);
+        uint64 maxPT = uint64(fromTime + window);
 
         uint64 earliestPublishTime = type(uint64).max;
         bytes[] memory single = new bytes[](1);
@@ -90,12 +74,22 @@ library LibPriceMarketService {
         for (uint256 i = 0; i < pythUpdateData.length; i++) {
             single[0] = pythUpdateData[i];
             uint256 singleFee = pyth.getUpdateFee(single);
-            PythStructs.PriceFeed[] memory feeds =
-                pyth.parsePriceFeedUpdates{value: singleFee}(single, feedIds, minPT, maxPT);
-            uint64 pt = uint64(feeds[0].price.publishTime);
-            if (pt < earliestPublishTime) {
-                earliestPublishTime = pt;
-                finalPrice = feeds[0].price.price;
+            try pyth.parsePriceFeedUpdates{value: singleFee}(single, feedIds, minPT, maxPT) returns (
+                PythStructs.PriceFeed[] memory feeds
+            ) {
+                feeConsumed += singleFee;
+                uint64 pt = uint64(feeds[0].price.publishTime);
+                if (pt < earliestPublishTime) {
+                    earliestPublishTime = pt;
+                    finalPrice = feeds[0].price.price;
+                    finalPublishTime = pt;
+                    found = true;
+                }
+            } catch {
+                // Out-of-range VAA for THIS window. The forwarded singleFee is rolled
+                // back with the reverted external call and stays in the Diamond's
+                // balance for refund.
+                continue;
             }
         }
     }

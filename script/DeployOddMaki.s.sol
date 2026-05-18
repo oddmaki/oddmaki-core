@@ -272,11 +272,11 @@ contract DeployOddMakiScript is Script {
         protocol = new OddMaki(cuts, args);
         console.log("  OddMaki:", address(protocol));
 
-        // Staleness admin selectors added via a follow-up cut — see `_buildCuts` notes.
-        IDiamond.FacetCut[] memory stalenessCuts = new IDiamond.FacetCut[](1);
-        stalenessCuts[0] = _cut(address(pythResolutionFacet), _pythStalenessSelectors());
-        DiamondCutFacet(address(protocol)).diamondCut(stalenessCuts, address(0), "");
-        console.log("  + staleness admin selectors cut");
+        // PythResolutionFacet tail selectors added via a follow-up cut — see `_buildCuts` notes.
+        IDiamond.FacetCut[] memory tailCuts = new IDiamond.FacetCut[](1);
+        tailCuts[0] = _cut(address(pythResolutionFacet), _pythTailSelectors());
+        DiamondCutFacet(address(protocol)).diamondCut(tailCuts, address(0), "");
+        console.log("  + Pyth tail selectors cut (markPriceMarketInvalid)");
         console.log("");
     }
 
@@ -542,9 +542,9 @@ contract DeployOddMakiScript is Script {
         cuts[18] = _cut(address(priceMarketFacet), priceMarketSelectors);
 
         // 19: PythResolutionFacet (Pyth-specific admin + creation + resolution).
-        // The two staleness-admin selectors are added via a follow-up diamondCut after
-        // construction (see `_deployDiamond`) — bundling all 6 here tips the Yul IR
-        // optimizer over its stack-depth limit when the full project is compiled in one run.
+        // `markPriceMarketInvalid` is added via a follow-up diamondCut after construction
+        // (see `_deployDiamond`) — bundling all 5 selectors here tips the Yul IR optimizer
+        // over its stack-depth limit when the full project is compiled in one run.
         bytes4[] memory pythResolutionSelectors = new bytes4[](4);
         pythResolutionSelectors[0] = PythResolutionFacet.setPythContract.selector;
         pythResolutionSelectors[1] = PythResolutionFacet.getPythContract.selector;
@@ -564,13 +564,12 @@ contract DeployOddMakiScript is Script {
         return IDiamond.FacetCut({facetAddress: facetAddress, action: IDiamond.FacetCutAction.Add, functionSelectors: selectors});
     }
 
-    /// @dev Staleness admin selectors added in a separate diamondCut call after Diamond
-    ///      construction. Bundling all 6 PythResolutionFacet selectors into the constructor
+    /// @dev `markPriceMarketInvalid` is added in a separate diamondCut call after Diamond
+    ///      construction. Bundling all 5 PythResolutionFacet selectors into the constructor
     ///      cuts tips the Yul IR optimizer into stack-too-deep under via_ir.
-    function _pythStalenessSelectors() internal pure returns (bytes4[] memory selectors) {
-        selectors = new bytes4[](2);
-        selectors[0] = PythResolutionFacet.setOpenMaxStaleness.selector;
-        selectors[1] = PythResolutionFacet.getOpenMaxStaleness.selector;
+    function _pythTailSelectors() internal pure returns (bytes4[] memory selectors) {
+        selectors = new bytes4[](1);
+        selectors[0] = PythResolutionFacet.markPriceMarketInvalid.selector;
     }
 
     // -------------------------------------------------------------------------

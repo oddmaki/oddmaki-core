@@ -13,10 +13,7 @@ import {FeedProvider} from "../interfaces/Types.sol";
  */
 library LibPriceMarketValidator {
     error PythContractNotConfigured();
-    error DurationTooShort();
-    error DurationTooLong();
-    error CloseTimeTooSoon();
-    error CloseTimeTooFar();
+    error CloseTimeNotAfterOpenTime();
     error ZeroStrikePrice();
     error NotPriceMarket();
     error PriceMarketAlreadyResolved();
@@ -27,7 +24,9 @@ library LibPriceMarketValidator {
     error ZeroAddress();
     error ETHRefundFailed();
     error ResolutionWindowTooLarge();
-    error NoValidPriceUpdate();
+    error InvalidOpenTime();
+    error NoOpenPriceInWindow();
+    error NoClosePriceInWindow();
 
     function requirePythConfigured() internal view {
         if (LibPriceMarketStorage.getPythContract() == address(0)) {
@@ -35,14 +34,20 @@ library LibPriceMarketValidator {
         }
     }
 
-    function requireValidDuration(uint256 duration) internal pure {
-        if (duration < LibPriceMarketStorage.MIN_DURATION) revert DurationTooShort();
-        if (duration > LibPriceMarketStorage.MAX_DURATION) revert DurationTooLong();
+    /// @notice Validates the user-supplied `openTime`. `0` is the immediate sentinel —
+    ///         the facet resolves it to `block.timestamp`. Any other value must be
+    ///         strictly in the future. No upper bound: scheduling horizon is a venue/UI
+    ///         concern, not a protocol invariant.
+    function requireValidOpenTime(uint256 openTime) internal view {
+        if (openTime != 0 && openTime <= block.timestamp) revert InvalidOpenTime();
     }
 
-    function requireValidCloseTime(uint256 closeTime) internal view {
-        if (closeTime < block.timestamp + LibPriceMarketStorage.MIN_DURATION) revert CloseTimeTooSoon();
-        if (closeTime > block.timestamp + LibPriceMarketStorage.MAX_DURATION) revert CloseTimeTooFar();
+    /// @notice The only protocol-level duration invariant: trading must end strictly
+    ///         after it begins. Any positive duration is allowed. Business-level
+    ///         bounds (minimum useful trading time, maximum listing horizon) belong
+    ///         to venues and frontends.
+    function requireValidCloseTime(uint256 effectiveOpenTime, uint256 closeTime) internal pure {
+        if (closeTime <= effectiveOpenTime) revert CloseTimeNotAfterOpenTime();
     }
 
     function requireNonZeroStrikePrice(int64 strikePrice) internal pure {
@@ -73,4 +78,5 @@ library LibPriceMarketValidator {
     function requireValidResolutionWindow(uint256 window) internal pure {
         if (window > LibPriceMarketStorage.MAX_RESOLUTION_WINDOW) revert ResolutionWindowTooLarge();
     }
+
 }

@@ -104,13 +104,22 @@ contract UpgradePythResolutionFacet is Script {
         //    b) Add the single new selector `markPriceMarketInvalid`.
         IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](2);
 
+        // Historical selectors. `setOpenMaxStaleness`, `getOpenMaxStaleness`, and the
+        // old `createPriceMarketPyth` (with bytes[] pythUpdateData) were removed from
+        // the source in the 2026-05-18 upgrade. Their selectors are inlined as hash
+        // literals here so this script — already broadcast — still compiles for
+        // historical replay/inspection.
         bytes4[] memory replaceSelectors = new bytes4[](6);
         replaceSelectors[0] = PythResolutionFacet.setPythContract.selector;
         replaceSelectors[1] = PythResolutionFacet.getPythContract.selector;
-        replaceSelectors[2] = PythResolutionFacet.createPriceMarketPyth.selector;
+        replaceSelectors[2] = bytes4(
+            keccak256(
+                "createPriceMarketPyth(uint256,bytes32,int64,uint256,string[],uint256,address,bytes,uint64,bytes32[],uint256,bytes[])"
+            )
+        );
         replaceSelectors[3] = PythResolutionFacet.resolvePriceMarketPyth.selector;
-        replaceSelectors[4] = PythResolutionFacet.setOpenMaxStaleness.selector;
-        replaceSelectors[5] = PythResolutionFacet.getOpenMaxStaleness.selector;
+        replaceSelectors[4] = bytes4(keccak256("setOpenMaxStaleness(uint256)"));
+        replaceSelectors[5] = bytes4(keccak256("getOpenMaxStaleness()"));
         cuts[0] = IDiamond.FacetCut({
             facetAddress: address(newFacet),
             action: IDiamond.FacetCutAction.Replace,
