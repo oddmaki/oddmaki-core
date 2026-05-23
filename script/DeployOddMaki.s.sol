@@ -458,7 +458,7 @@ contract DeployOddMakiScript is Script {
         cuts[9] = _cut(address(orderBookFacet), orderBookSelectors);
 
         // 10: ProtocolFacet
-        bytes4[] memory protocolSelectors = new bytes4[](18);
+        bytes4[] memory protocolSelectors = new bytes4[](10);
         protocolSelectors[0] = ProtocolFacet.setProtocolTreasury.selector;
         protocolSelectors[1] = ProtocolFacet.getProtocolTreasury.selector;
         protocolSelectors[2] = ProtocolFacet.setProtocolFeeBps.selector;
@@ -467,16 +467,8 @@ contract DeployOddMakiScript is Script {
         protocolSelectors[5] = ProtocolFacet.getUmaOracle.selector;
         protocolSelectors[6] = ProtocolFacet.setUmaIdentifier.selector;
         protocolSelectors[7] = ProtocolFacet.getUmaIdentifier.selector;
-        protocolSelectors[8] = ProtocolFacet.withdrawETH.selector;
-        protocolSelectors[9] = ProtocolFacet.setCollateralWhitelisted.selector;
-        protocolSelectors[10] = ProtocolFacet.isCollateralWhitelisted.selector;
-        protocolSelectors[11] = ProtocolFacet.pauseProtocol.selector;
-        protocolSelectors[12] = ProtocolFacet.unpauseProtocol.selector;
-        protocolSelectors[13] = ProtocolFacet.getProtocolPaused.selector;
-        protocolSelectors[14] = ProtocolFacet.suspendVenue.selector;
-        protocolSelectors[15] = ProtocolFacet.unsuspendVenue.selector;
-        protocolSelectors[16] = ProtocolFacet.getVenueSuspended.selector;
-        protocolSelectors[17] = ProtocolFacet.withdrawERC20.selector;
+        protocolSelectors[8] = ProtocolFacet.setCollateralWhitelisted.selector;
+        protocolSelectors[9] = ProtocolFacet.isCollateralWhitelisted.selector;
         cuts[10] = _cut(address(protocolFacet), protocolSelectors);
 
         // 11: MarketGroupFacet
