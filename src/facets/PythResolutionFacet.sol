@@ -222,8 +222,11 @@ contract PythResolutionFacet is ReentrancyGuard {
     ///         For deferred Up/Down markets (`strikePrice == 0`), the resolver submits
     ///         VAAs for both the open window `[openTime, openTime + window]` and the
     ///         close window `[closeTime, closeTime + window]` in a single
-    ///         `pythUpdateData` array. The facet picks the earliest in-range VAA per
-    ///         window. For explicit-strike markets, only close-window VAAs are needed.
+    ///         `pythUpdateData` array. The facet selects the FIRST in-range VAA per
+    ///         window via Pyth's `parsePriceFeedUpdatesUnique`, which rejects any VAA
+    ///         whose encoded `prevPublishTime` falls inside the window — so the chosen
+    ///         price is deterministic regardless of which VAAs the caller submits or
+    ///         omits. For explicit-strike markets, only close-window VAAs are needed.
     ///         If Pyth resolution becomes permanently impossible (feed deprecation,
     ///         prolonged outage), holders can fall back to {markPriceMarketInvalid}
     ///         after a grace period.
@@ -256,7 +259,7 @@ contract PythResolutionFacet is ReentrancyGuard {
         //    standard grace period past closeTime.
         if (pm.strikePrice == 0) {
             (int64 openPrice, uint64 openPubTime, bool openFound, uint256 openFee) = LibPriceMarketService
-                .pickEarliestInWindow(pm.feedId, pythUpdateData, pm.openTime, effectiveWindow);
+                .pickFirstInWindow(pm.feedId, pythUpdateData, pm.openTime, effectiveWindow);
             if (!openFound) revert LibPriceMarketValidator.NoOpenPriceInWindow();
 
             pm.strikePrice = openPrice;
@@ -266,7 +269,7 @@ contract PythResolutionFacet is ReentrancyGuard {
 
         // 3. Capture the close price from the same submitted array.
         (int64 finalPrice,, bool closeFound, uint256 closeFee) =
-            LibPriceMarketService.pickEarliestInWindow(pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
+            LibPriceMarketService.pickFirstInWindow(pm.feedId, pythUpdateData, pm.closeTime, effectiveWindow);
         if (!closeFound) revert LibPriceMarketValidator.NoClosePriceInWindow();
         totalFee += closeFee;
 

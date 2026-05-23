@@ -17,7 +17,7 @@ import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
 import {MockUmaOracle} from "./helpers/MockUmaOracle.sol";
-import {MockPyth} from "@pythnetwork/pyth-sdk-solidity/MockPyth.sol";
+import {MockPythUnique} from "./helpers/MockPythUnique.sol";
 import {PythStructs} from "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import {LibPriceMarketStorage} from "../src/storage/LibPriceMarketStorage.sol";
 import {LibMarketOracleStorage} from "../src/storage/LibMarketOracleStorage.sol";
@@ -30,7 +30,7 @@ contract PriceMarketTest is Test, DiamondSetup {
     MockCTF public ctf;
     MockERC20 public collateral;
     MockUmaOracle public umaOracle;
-    MockPyth public mockPyth;
+    MockPythUnique public mockPyth;
     uint256 public venueId;
 
     address constant CREATOR = address(0xC8EA);
@@ -70,7 +70,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         ctf = new MockCTF();
         collateral = new MockERC20("Test USDC", "TUSDC", 6);
         umaOracle = new MockUmaOracle();
-        mockPyth = new MockPyth(60, 1); // 60s valid period, 1 wei fee
+        mockPyth = new MockPythUnique(60, 1); // 60s valid period, 1 wei fee
 
         VaultFacet(address(diamond)).setCtf(address(ctf));
         ProtocolFacet(address(diamond)).setCollateralWhitelisted(address(collateral), true);
@@ -104,6 +104,31 @@ contract PriceMarketTest is Test, DiamondSetup {
             PRICE_EXPO,
             price, // emaPrice (same for tests)
             0, // emaConf
+            publishTime
+        );
+        return updateData;
+    }
+
+    /// @dev Build a single VAA in the unique-parse format used by
+    ///      `parsePriceFeedUpdatesUnique`. `prevPublishTime = publishTime - 1` so
+    ///      every VAA built by this helper is the FIRST update at-or-after its own
+    ///      `publishTime`, i.e. accepted as long as it falls inside the queried
+    ///      window. For attack tests that need a non-first VAA, build the bytes
+    ///      inline with an explicit `prevPublishTime` instead.
+    function _buildPythUniqueVAA(bytes32 feedId, int64 price, uint64 publishTime)
+        internal
+        view
+        returns (bytes[] memory)
+    {
+        bytes[] memory updateData = new bytes[](1);
+        updateData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            feedId,
+            price,
+            0, // conf
+            PRICE_EXPO,
+            price, // emaPrice
+            0, // emaConf
+            publishTime == 0 ? 0 : publishTime - 1, // prevPublishTime
             publishTime
         );
         return updateData;
@@ -190,11 +215,11 @@ contract PriceMarketTest is Test, DiamondSetup {
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
 
         bytes[] memory pythData = new bytes[](2);
-        pythData[0] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, openPrice, 0, PRICE_EXPO, openPrice, 0, uint64(openTime)
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, openPrice, 0, PRICE_EXPO, openPrice, 0, uint64(openTime - 1), uint64(openTime)
         );
-        pythData[1] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, closePrice, 0, PRICE_EXPO, closePrice, 0, uint64(closeTime)
+        pythData[1] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, closePrice, 0, PRICE_EXPO, closePrice, 0, uint64(closeTime - 1), uint64(closeTime)
         );
 
         uint256 fee = mockPyth.getUpdateFee(pythData);
@@ -205,7 +230,7 @@ contract PriceMarketTest is Test, DiamondSetup {
     /// @dev Resolve an explicit-strike market with a single close-window VAA.
     function _resolveStrikeMarket(uint256 marketId, int64 closePrice) internal {
         (, , , uint256 closeTime, , , , , , ) = PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, closePrice, uint64(closeTime));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, closePrice, uint64(closeTime));
 
         vm.prank(RESOLVER);
         PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: 1}(marketId, pythData);
@@ -526,11 +551,11 @@ contract PriceMarketTest is Test, DiamondSetup {
         (, , uint256 openTime, uint256 closeTime, , , , , , ) =
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
         bytes[] memory pythData = new bytes[](2);
-        pythData[0] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, OPEN_PRICE, 0, PRICE_EXPO, OPEN_PRICE, 0, uint64(openTime)
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, OPEN_PRICE, 0, PRICE_EXPO, OPEN_PRICE, 0, uint64(openTime - 1), uint64(openTime)
         );
-        pythData[1] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, OPEN_PRICE + 1, 0, PRICE_EXPO, OPEN_PRICE + 1, 0, uint64(closeTime)
+        pythData[1] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, OPEN_PRICE + 1, 0, PRICE_EXPO, OPEN_PRICE + 1, 0, uint64(closeTime - 1), uint64(closeTime)
         );
 
         uint256 expectedFee = mockPyth.getUpdateFee(pythData); // 2 wei (1 per VAA)
@@ -545,7 +570,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createImmediateDeferredMarket();
         // Don't warp -- still before closeTime
 
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
 
         vm.expectRevert(LibPriceMarketValidator.CloseTimeNotReached.selector);
         vm.prank(RESOLVER);
@@ -561,11 +586,11 @@ contract PriceMarketTest is Test, DiamondSetup {
         (, , uint256 openTime, uint256 closeTime, , , , , , ) =
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
         bytes[] memory pythData = new bytes[](2);
-        pythData[0] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, OPEN_PRICE, 0, PRICE_EXPO, OPEN_PRICE, 0, uint64(openTime)
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, OPEN_PRICE, 0, PRICE_EXPO, OPEN_PRICE, 0, uint64(openTime - 1), uint64(openTime)
         );
-        pythData[1] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, OPEN_PRICE + 1, 0, PRICE_EXPO, OPEN_PRICE + 1, 0, uint64(closeTime)
+        pythData[1] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, OPEN_PRICE + 1, 0, PRICE_EXPO, OPEN_PRICE + 1, 0, uint64(closeTime - 1), uint64(closeTime)
         );
 
         vm.expectRevert(LibPriceMarketValidator.PriceMarketAlreadyResolved.selector);
@@ -582,7 +607,7 @@ contract PriceMarketTest is Test, DiamondSetup {
             venueId, "", outcomes, TICK_SIZE, address(collateral), 0, 0, new bytes32[](0)
         );
 
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, OPEN_PRICE, uint64(block.timestamp));
 
         vm.expectRevert(LibPriceMarketValidator.NotPriceMarket.selector);
         vm.prank(RESOLVER);
@@ -641,7 +666,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         vm.warp(createdAt + DURATION);
 
         // Only submit a close-window VAA — no in-range open VAA.
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, OPEN_PRICE + 1, uint64(createdAt + DURATION));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, OPEN_PRICE + 1, uint64(createdAt + DURATION));
 
         vm.expectRevert(LibPriceMarketValidator.NoOpenPriceInWindow.selector);
         vm.prank(RESOLVER);
@@ -660,11 +685,12 @@ contract PriceMarketTest is Test, DiamondSetup {
         vm.warp(storedCloseTime);
 
         // Publish a VAA at closeTime + window + 1, just past the close window
-        // [closeTime, closeTime + 60]. parsePriceFeedUpdates reverts out-of-range
-        // and our try/catch swallows it; pickEarliestInWindow returns found=false,
-        // and the facet reverts with NoClosePriceInWindow.
+        // [closeTime, closeTime + 60]. parsePriceFeedUpdatesUnique reverts on
+        // publishTime > maxPublishTime and our try/catch swallows it;
+        // pickFirstInWindow returns found=false, and the facet reverts with
+        // NoClosePriceInWindow.
         uint64 outOfRange = uint64(storedCloseTime + 61);
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, STRIKE_PRICE + int64(100), outOfRange);
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, STRIKE_PRICE + int64(100), outOfRange);
 
         vm.expectRevert(LibPriceMarketValidator.NoClosePriceInWindow.selector);
         vm.prank(RESOLVER);
@@ -679,16 +705,20 @@ contract PriceMarketTest is Test, DiamondSetup {
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
         vm.warp(closeTime);
 
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, OPEN_PRICE, uint64(openTime));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, OPEN_PRICE, uint64(openTime));
 
         vm.expectRevert(LibPriceMarketValidator.NoClosePriceInWindow.selector);
         vm.prank(RESOLVER);
         PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: 1}(marketId, pythData);
     }
 
-    function test_resolvePriceMarket_picksEarliestOpenAndCloseVAA() public {
-        // Submit two in-range VAAs in each window, ordered late-first. The contract
-        // must select the earliest publishTime per window — defends cherry-picking.
+    function test_resolvePriceMarket_picksFirstOpenAndCloseVAA() public {
+        // Submit two in-range VAAs in each window, ordered late-first. The earliest
+        // (i.e. first-in-window) VAA per window must drive resolution. The late
+        // VAAs are encoded with `prevPublishTime` equal to the earlier VAA's
+        // publishTime — exactly what Pyth signs on-chain when an earlier update
+        // exists in the same window — so `parsePriceFeedUpdatesUnique` rejects
+        // them and only the first VAA per window is accepted.
         uint256 marketId = _createImmediateDeferredMarket();
         (, , uint256 openTime, uint256 closeTime, , , , , , ) =
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
@@ -700,18 +730,24 @@ contract PriceMarketTest is Test, DiamondSetup {
         int64 lateClose = OPEN_PRICE + 100000000; // Up wins against earlyOpen
 
         bytes[] memory pythData = new bytes[](4);
-        // Order: late open, late close, early close, early open — adversarial ordering.
-        pythData[0] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, lateOpen, 0, PRICE_EXPO, lateOpen, 0, uint64(openTime + 30)
+        // Order: late open, late close, early close, early open — adversarial.
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, lateOpen, 0, PRICE_EXPO, lateOpen, 0,
+            uint64(openTime), // prevPublishTime = earlier in-window VAA
+            uint64(openTime + 30)
         );
-        pythData[1] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, lateClose, 0, PRICE_EXPO, lateClose, 0, uint64(closeTime + 30)
+        pythData[1] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, lateClose, 0, PRICE_EXPO, lateClose, 0,
+            uint64(closeTime), // prevPublishTime = earlier in-window VAA
+            uint64(closeTime + 30)
         );
-        pythData[2] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, earlyClose, 0, PRICE_EXPO, earlyClose, 0, uint64(closeTime)
+        pythData[2] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, earlyClose, 0, PRICE_EXPO, earlyClose, 0,
+            uint64(closeTime - 1), uint64(closeTime)
         );
-        pythData[3] = mockPyth.createPriceFeedUpdateData(
-            ETH_USD_FEED, earlyOpen, 0, PRICE_EXPO, earlyOpen, 0, uint64(openTime)
+        pythData[3] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, earlyOpen, 0, PRICE_EXPO, earlyOpen, 0,
+            uint64(openTime - 1), uint64(openTime)
         );
 
         uint256 fee = mockPyth.getUpdateFee(pythData);
@@ -721,12 +757,81 @@ contract PriceMarketTest is Test, DiamondSetup {
         (, , , , , int64 finalPrice, , bool resolved, int64 strikePrice, uint256 openPriceTime) =
             PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
         assertTrue(resolved);
-        assertEq(strikePrice, earlyOpen, "strikePrice must come from earliest open-window VAA");
-        assertEq(finalPrice, earlyClose, "finalPrice must come from earliest close-window VAA");
+        assertEq(strikePrice, earlyOpen, "strikePrice must come from first-in-window open VAA");
+        assertEq(finalPrice, earlyClose, "finalPrice must come from first-in-window close VAA");
         assertEq(openPriceTime, openTime);
         // earlyClose (OPEN_PRICE - 1e8) < earlyOpen (OPEN_PRICE) → Down wins.
         MarketRegistryData memory reg = MarketsFacet(address(diamond)).getMarketRegistryData(marketId);
         assertEq(uint8(reg.status), uint8(MarketStatus.Resolved));
+    }
+
+    /// @notice A resolver who submits ONLY a later in-window VAA — omitting an
+    ///         earlier in-window VAA whose price would settle the opposite outcome
+    ///         — must not be able to drive resolution. The later VAA carries the
+    ///         earlier VAA's publishTime as its `prevPublishTime`, so
+    ///         `parsePriceFeedUpdatesUnique` rejects it and resolution reverts.
+    function test_resolvePriceMarket_omittedEarlierVaaReverts() public {
+        uint256 closeTime = block.timestamp + DURATION;
+        uint256 marketId = _createStrikeMarket(STRIKE_PRICE, closeTime);
+        vm.warp(closeTime);
+
+        // Two in-window VAAs exist on Hermes: one at closeTime that would settle
+        // Below, one at closeTime + 30 that would settle Above. The resolver tries
+        // to submit only the later one. Its `prevPublishTime` (= the earlier
+        // VAA's publishTime) falls inside the close window and the unique-parse
+        // call rejects it.
+        int64 laterPrice = STRIKE_PRICE + 100000000;
+        bytes[] memory pythData = new bytes[](1);
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED,
+            laterPrice,
+            0,
+            PRICE_EXPO,
+            laterPrice,
+            0,
+            uint64(closeTime), // prevPublishTime — the omitted earlier in-window VAA
+            uint64(closeTime + 30)
+        );
+
+        vm.expectRevert(LibPriceMarketValidator.NoClosePriceInWindow.selector);
+        vm.prank(RESOLVER);
+        PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: 1}(marketId, pythData);
+    }
+
+    /// @notice When the resolver submits BOTH in-window VAAs in good faith, the
+    ///         earlier one wins regardless of array ordering. Confirms the
+    ///         honest-resolver path remains operational under the unique-parse check.
+    function test_resolvePriceMarket_honestResolverWithBothVaasSucceeds() public {
+        uint256 ct = block.timestamp + DURATION;
+        uint256 marketId = _createStrikeMarket(STRIKE_PRICE, ct);
+        vm.warp(ct);
+
+        int64 firstPrice = STRIKE_PRICE - 100000000; // first-in-window — must drive resolution
+        int64 laterPrice = STRIKE_PRICE + 100000000; // later in-window — must be ignored
+
+        uint64 firstPub = uint64(ct);
+        uint64 laterPub = uint64(ct) + 30;
+        uint64 firstPrev = uint64(ct) - 1;
+
+        // Adversarial array order: later VAA first, earlier VAA second. The late VAA
+        // declares the earlier VAA's publishTime as its `prevPublishTime`, modelling
+        // exactly what Pyth signs on-chain when an earlier in-window update exists.
+        bytes[] memory pythData = new bytes[](2);
+        pythData[0] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, laterPrice, 0, PRICE_EXPO, laterPrice, 0, firstPub, laterPub
+        );
+        pythData[1] = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, firstPrice, 0, PRICE_EXPO, firstPrice, 0, firstPrev, firstPub
+        );
+
+        uint256 fee = mockPyth.getUpdateFee(pythData);
+        vm.prank(RESOLVER);
+        PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: fee}(marketId, pythData);
+
+        (, , , , , int64 finalPrice, , bool resolved, , ) =
+            PriceMarketFacet(address(diamond)).getPriceMarket(marketId);
+        assertTrue(resolved);
+        assertEq(finalPrice, firstPrice, "first in-window VAA must drive resolution");
     }
 
     // ======================================================================
@@ -878,7 +983,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         uint256 marketId = _createStrikeMarket(STRIKE_PRICE, closeTime);
         vm.warp(closeTime);
 
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, STRIKE_PRICE + 1, uint64(closeTime));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, STRIKE_PRICE + 1, uint64(closeTime));
         vm.prank(RESOLVER);
         PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: 1}(marketId, pythData);
 
@@ -938,7 +1043,7 @@ contract PriceMarketTest is Test, DiamondSetup {
         MarketRegistryData memory reg = MarketsFacet(address(diamond)).getMarketRegistryData(marketId);
         assertEq(uint8(reg.status), uint8(MarketStatus.Resolved));
 
-        bytes[] memory pythData = _buildPythVAA(ETH_USD_FEED, STRIKE_PRICE + 1, uint64(closeTime));
+        bytes[] memory pythData = _buildPythUniqueVAA(ETH_USD_FEED, STRIKE_PRICE + 1, uint64(closeTime));
         vm.expectRevert(LibPriceMarketValidator.PriceMarketAlreadyResolved.selector);
         vm.prank(RESOLVER);
         PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: 1}(marketId, pythData);
