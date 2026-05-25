@@ -5,6 +5,7 @@ pragma solidity 0.8.28;
 
 import {IPyth} from "lib/pyth-sdk-solidity/IPyth.sol";
 import {PythStructs} from "lib/pyth-sdk-solidity/PythStructs.sol";
+import {IPythExtended} from "../interfaces/IPythExtended.sol";
 import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
 
@@ -33,26 +34,32 @@ library LibPriceMarketService {
         }
     }
 
-    /// @notice Parse each submitted VAA individually and return the price whose
-    ///         publishTime is the smallest value in `[fromTime, fromTime + window]`.
-    ///         Selecting the earliest in-range VAA prevents resolvers from biasing the
-    ///         chosen price by reordering `pythUpdateData`.
+    /// @notice Parse each submitted VAA individually and return the price for the
+    ///         FIRST in-range Pyth update in `[fromTime, fromTime + window]`.
+    ///         Uses `parsePriceFeedUpdatesUnique`, which enforces that the
+    ///         submitted VAA's encoded `prevPublishTime` is strictly less than
+    ///         `minPublishTime`. Any later in-window VAA has a `prevPublishTime`
+    ///         that falls inside the window and is rejected by Pyth. This makes
+    ///         the chosen price deterministic per (feed, window) regardless of
+    ///         which VAAs the caller submits or in what order, closing an
+    ///         outcome-manipulation vector where a resolver could omit an
+    ///         earlier in-range VAA whose price favored the opposite outcome.
     ///
     ///         For deferred Up/Down markets the same submitted array carries VAAs for
-    ///         two windows (open and close). VAAs outside the window-under-test cause
-    ///         `parsePriceFeedUpdates` to revert with `PriceFeedNotFoundWithinRange` —
-    ///         that revert is caught and the VAA is skipped, so out-of-range entries
-    ///         contribute nothing to this window's selection (they're picked up by the
-    ///         caller's second invocation against the other window). On a caught
-    ///         revert the forwarded `singleFee` is rolled back with the call and
-    ///         remains in the Diamond's balance; the caller's `refundExcess` returns
-    ///         any unspent value to the resolver.
+    ///         two windows (open and close). VAAs outside the window-under-test, and
+    ///         non-earliest VAAs within the window, both cause `parsePriceFeedUpdatesUnique`
+    ///         to revert — the revert is caught and the VAA is skipped, so out-of-range
+    ///         and non-first entries contribute nothing to this window's selection
+    ///         (the earliest in-range VAA, submitted in either position, is selected).
+    ///         On a caught revert the forwarded `singleFee` is rolled back with the
+    ///         call and remains in the Diamond's balance; the caller's `refundExcess`
+    ///         returns any unspent value to the resolver.
     ///
     ///         Returns `(price, publishTime, found, feeConsumed)`. When `found == false`
-    ///         no submitted VAA fell in `[fromTime, fromTime + window]` — the caller
-    ///         must revert with a context-specific error (`NoOpenPriceInWindow` /
-    ///         `NoClosePriceInWindow`).
-    function pickEarliestInWindow(
+    ///         no submitted VAA was both in-range AND the first update at or after
+    ///         `fromTime` — the caller must revert with a context-specific error
+    ///         (`NoOpenPriceInWindow` / `NoClosePriceInWindow`).
+    function pickFirstInWindow(
         bytes32 pythFeedId,
         bytes[] calldata pythUpdateData,
         uint256 fromTime,
@@ -61,33 +68,33 @@ library LibPriceMarketService {
         if (pythUpdateData.length == 0) return (0, 0, false, 0);
 
         address pythContract = LibPriceMarketStorage.getPythContract();
-        IPyth pyth = IPyth(pythContract);
+        IPythExtended pyth = IPythExtended(pythContract);
 
         bytes32[] memory feedIds = new bytes32[](1);
         feedIds[0] = pythFeedId;
         uint64 minPT = uint64(fromTime);
         uint64 maxPT = uint64(fromTime + window);
 
-        uint64 earliestPublishTime = type(uint64).max;
         bytes[] memory single = new bytes[](1);
 
         for (uint256 i = 0; i < pythUpdateData.length; i++) {
             single[0] = pythUpdateData[i];
             uint256 singleFee = pyth.getUpdateFee(single);
-            try pyth.parsePriceFeedUpdates{value: singleFee}(single, feedIds, minPT, maxPT) returns (
+            try pyth.parsePriceFeedUpdatesUnique{value: singleFee}(single, feedIds, minPT, maxPT) returns (
                 PythStructs.PriceFeed[] memory feeds
             ) {
+                // At most one submitted VAA per feed per window can satisfy the
+                // uniqueness constraint, so we accept the first success and stop.
                 feeConsumed += singleFee;
-                uint64 pt = uint64(feeds[0].price.publishTime);
-                if (pt < earliestPublishTime) {
-                    earliestPublishTime = pt;
-                    finalPrice = feeds[0].price.price;
-                    finalPublishTime = pt;
-                    found = true;
-                }
+                finalPrice = feeds[0].price.price;
+                finalPublishTime = uint64(feeds[0].price.publishTime);
+                found = true;
+                break;
             } catch {
-                // Out-of-range VAA for THIS window. The forwarded singleFee is rolled
-                // back with the reverted external call and stays in the Diamond's
+                // The submitted VAA was either out-of-range for THIS window, or
+                // not the first update at or after `minPT` (its `prevPublishTime`
+                // falls in the window). The forwarded singleFee is rolled back
+                // with the reverted external call and stays in the Diamond's
                 // balance for refund.
                 continue;
             }
