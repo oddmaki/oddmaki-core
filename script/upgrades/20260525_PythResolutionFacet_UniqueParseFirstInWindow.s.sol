@@ -9,7 +9,7 @@ import {IDiamond} from "../../src/interfaces/IDiamond.sol";
 import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
 
 /**
- * @title 20260520 — PythResolutionFacet: first-in-window VAA selection via parsePriceFeedUpdatesUnique
+ * @title 20260525 — PythResolutionFacet: first-in-window VAA selection via parsePriceFeedUpdatesUnique
  * @notice Replaces the existing PythResolutionFacet with a freshly deployed one
  *         whose price selection is hardened against an outcome-manipulation vector
  *         in the prior implementation.
@@ -80,13 +80,13 @@ import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
  * ─── Run modes ────────────────────────────────────────────────────────────
  * Testnet (Base Sepolia) — EOA owner, broadcast directly with the `deployer` key:
  *   source .env
- *   forge script script/upgrades/20260520_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
+ *   forge script script/upgrades/20260525_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
  *       --rpc-url $RPC_URL --account deployer --broadcast -vvvv
  *
  * Mainnet (Base) — Safe owner, deploy the facet from `deployer-mainnet` and
  * print Safe Transaction Builder calldata for the diamondCut:
  *   source .env.mainnet      # exports DIAMOND_ADDRESS and SAFE_MODE=true
- *   forge script script/upgrades/20260520_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
+ *   forge script script/upgrades/20260525_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
  *       --rpc-url $RPC_URL \
  *       --account deployer-mainnet \
  *       --sender <deployer-mainnet-address> \
@@ -96,7 +96,7 @@ import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
  *   Console output prints To / Value / Data fields for the Safe UI.
  *
  * Simulation only — no broadcast (works for either mode):
- *   forge script script/upgrades/20260520_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
+ *   forge script script/upgrades/20260525_PythResolutionFacet_UniqueParseFirstInWindow.s.sol \
  *       --rpc-url $RPC_URL --sender <owner-or-safe-addr> -vvvv
  *
  * ─── Pre-flight (recommended) ─────────────────────────────────────────────
@@ -115,7 +115,7 @@ import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
  *           --chain <base|base-sepolia> --watch
  *   - Snapshot the deployment:
  *       node script/save-deployment.js <network> <version> "<notes>" \
- *           --upgrade 20260520_PythResolutionFacet_UniqueParseFirstInWindow.s.sol
+ *           --upgrade 20260525_PythResolutionFacet_UniqueParseFirstInWindow.s.sol
  *   - Loupe check — confirm the 5 selectors now point at the new facet:
  *       cast call $DIAMOND_ADDRESS "facetAddress(bytes4)(address)" \
  *           $(cast sig "resolvePriceMarketPyth(uint256,bytes[])") --rpc-url $RPC_URL
