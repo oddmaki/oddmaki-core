@@ -11,11 +11,9 @@ import { IERC173 } from "../src/interfaces/IERC173.sol";
 import { DiamondCutFacet } from "../src/facets/DiamondCutFacet.sol";
 import { DiamondLoupeFacet } from "../src/facets/DiamondLoupeFacet.sol";
 import { OwnershipFacet } from "../src/facets/OwnershipFacet.sol";
-import { ProtocolFacet } from "../src/facets/ProtocolFacet.sol";
 
 /// @title Diamond infrastructure tests
-/// @notice Tests EIP-2535 Diamond proxy basics: deployment, facet cuts, loupe functions, ownership,
-///         ETH rescue, and protocol-level moderation (pause/suspend).
+/// @notice Tests EIP-2535 Diamond proxy basics: deployment, facet cuts, loupe functions, and ownership.
 contract DiamondTest is Test {
     OddMaki public protocol;
     address public owner;
@@ -31,7 +29,7 @@ contract DiamondTest is Test {
 
     function test_FacetAddressesReturnsThreeFacets() public view {
         address[] memory facets = DiamondLoupeFacet(address(protocol)).facetAddresses();
-        assertEq(facets.length, 4, "expected Cut, Loupe, Ownership, Protocol facets");
+        assertEq(facets.length, 3, "expected Cut, Loupe, Ownership facets");
     }
 
     function test_OnlyOwnerCanCallDiamondCut() public {
@@ -49,37 +47,12 @@ contract DiamondTest is Test {
         IDiamondCut(address(protocol)).diamondCut(cuts, address(0), "");
     }
 
-    // -- M-7: ETH rescue via withdrawETH --
-
-    function test_M7_ownerCanRescueTrappedEth() public {
-        // Send ETH to Diamond (accepted by receive())
-        vm.deal(address(0xBEEF), 1 ether);
-        vm.prank(address(0xBEEF));
-        (bool sent,) = address(protocol).call{value: 1 ether}("");
-        assertTrue(sent, "ETH should be accepted");
-
-        // Owner rescues the ETH
-        address recipient = address(0xCAFE);
-        vm.prank(owner);
-        ProtocolFacet(address(protocol)).withdrawETH(recipient);
-        assertEq(recipient.balance, 1 ether, "Recipient should receive rescued ETH");
-        assertEq(address(protocol).balance, 0, "Diamond should have 0 ETH after rescue");
-    }
-
-    function test_M7_nonOwnerCannotWithdrawEth() public {
-        vm.deal(address(protocol), 1 ether);
-        vm.prank(address(0xBEEF));
-        vm.expectRevert();
-        ProtocolFacet(address(protocol)).withdrawETH(address(0xBEEF));
-    }
-
     function _deployOddMaki(address _owner) internal returns (OddMaki p) {
         DiamondCutFacet cutFacet = new DiamondCutFacet();
         DiamondLoupeFacet loupeFacet = new DiamondLoupeFacet();
         OwnershipFacet ownershipFacet = new OwnershipFacet();
-        ProtocolFacet protocolFacetImpl = new ProtocolFacet();
 
-        IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](4);
+        IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](3);
 
         bytes4[] memory cutSelectors = new bytes4[](1);
         cutSelectors[0] = DiamondCutFacet.diamondCut.selector;
@@ -108,14 +81,6 @@ contract DiamondTest is Test {
             facetAddress: address(ownershipFacet),
             action: IDiamond.FacetCutAction.Add,
             functionSelectors: ownershipSelectors
-        });
-
-        bytes4[] memory protocolSelectors = new bytes4[](1);
-        protocolSelectors[0] = ProtocolFacet.withdrawETH.selector;
-        cuts[3] = IDiamond.FacetCut({
-            facetAddress: address(protocolFacetImpl),
-            action: IDiamond.FacetCutAction.Add,
-            functionSelectors: protocolSelectors
         });
 
         DiamondArgs memory args = DiamondArgs({

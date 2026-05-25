@@ -176,25 +176,17 @@ contract DiamondSetup is Test {
         orderBookSelectors[5] = OrderBookFacet.canMatchOrders.selector;
         cuts[9] = _cut(address(_orderBookFacet), orderBookSelectors);
 
-        bytes4[] memory protocolSelectors = new bytes4[](18);
+        bytes4[] memory protocolSelectors = new bytes4[](10);
         protocolSelectors[0] = ProtocolFacet.setProtocolTreasury.selector;
         protocolSelectors[1] = ProtocolFacet.getProtocolTreasury.selector;
         protocolSelectors[2] = ProtocolFacet.setUmaOracle.selector;
         protocolSelectors[3] = ProtocolFacet.getUmaOracle.selector;
         protocolSelectors[4] = ProtocolFacet.setUmaIdentifier.selector;
         protocolSelectors[5] = ProtocolFacet.getUmaIdentifier.selector;
-        protocolSelectors[6] = ProtocolFacet.withdrawETH.selector;
-        protocolSelectors[7] = ProtocolFacet.setCollateralWhitelisted.selector;
-        protocolSelectors[8] = ProtocolFacet.isCollateralWhitelisted.selector;
-        protocolSelectors[9] = ProtocolFacet.pauseProtocol.selector;
-        protocolSelectors[10] = ProtocolFacet.unpauseProtocol.selector;
-        protocolSelectors[11] = ProtocolFacet.getProtocolPaused.selector;
-        protocolSelectors[12] = ProtocolFacet.suspendVenue.selector;
-        protocolSelectors[13] = ProtocolFacet.unsuspendVenue.selector;
-        protocolSelectors[14] = ProtocolFacet.getVenueSuspended.selector;
-        protocolSelectors[15] = ProtocolFacet.withdrawERC20.selector;
-        protocolSelectors[16] = ProtocolFacet.setProtocolFeeBps.selector;
-        protocolSelectors[17] = ProtocolFacet.getProtocolFeeBps.selector;
+        protocolSelectors[6] = ProtocolFacet.setCollateralWhitelisted.selector;
+        protocolSelectors[7] = ProtocolFacet.isCollateralWhitelisted.selector;
+        protocolSelectors[8] = ProtocolFacet.setProtocolFeeBps.selector;
+        protocolSelectors[9] = ProtocolFacet.getProtocolFeeBps.selector;
         cuts[10] = _cut(address(_protocolFacet), protocolSelectors);
 
         bytes4[] memory marketGroupSelectors = new bytes4[](6);

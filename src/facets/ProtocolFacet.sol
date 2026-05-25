@@ -4,30 +4,21 @@
 pragma solidity 0.8.28;
 
 import {LibDiamond} from "../libraries/LibDiamond.sol";
-import {TransferHelper} from "../libraries/TransferHelper.sol";
 import {LibProtocolAggregate} from "../aggregates/LibProtocolAggregate.sol";
 import {LibProtocolStorage} from "../storage/LibProtocolStorage.sol";
-import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
-import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 
 /**
  * @title ProtocolFacet
  * @author OddMaki Protocol
- * @notice Owner-only protocol-wide configuration: treasury, oracle settings,
- *         collateral whitelist, protocol pause, and venue suspension.
+ * @notice Owner-only protocol-wide configuration: treasury, fee bps, UMA oracle,
+ *         UMA identifier, and collateral whitelist.
  */
 contract ProtocolFacet {
     event ProtocolTreasuryUpdated(address indexed treasury);
     event ProtocolFeeBpsUpdated(uint256 bps);
     event UmaOracleUpdated(address indexed oracle);
     event UmaIdentifierUpdated(bytes32 identifier);
-    event EthWithdrawn(address indexed recipient, uint256 amount);
-    event ERC20Withdrawn(address indexed token, address indexed recipient, uint256 amount);
     event CollateralWhitelistUpdated(address indexed token, bool whitelisted);
-    event ProtocolPausedEvent(address indexed caller);
-    event ProtocolUnpausedEvent(address indexed caller);
-    event VenueSuspendedEvent(uint256 indexed venueId, address indexed caller);
-    event VenueUnsuspendedEvent(uint256 indexed venueId, address indexed caller);
 
     /// @notice Set the protocol treasury address for fee collection. Owner-only.
     /// @param treasury the new treasury address.
@@ -95,77 +86,5 @@ contract ProtocolFacet {
     /// @param token the ERC-20 token address to check.
     function isCollateralWhitelisted(address token) external view returns (bool) {
         return LibProtocolStorage.isCollateralWhitelisted(token);
-    }
-
-    // ---- Moderation ----
-
-    /// @notice Pause the entire protocol. Blocks all trading and market creation globally. Owner-only.
-    function pauseProtocol() external {
-        LibDiamond.enforceIsContractOwner();
-        LibProtocolAggregate.setProtocolPaused(true);
-        emit ProtocolPausedEvent(msg.sender);
-    }
-
-    /// @notice Unpause the protocol. Owner-only.
-    function unpauseProtocol() external {
-        LibDiamond.enforceIsContractOwner();
-        LibProtocolAggregate.setProtocolPaused(false);
-        emit ProtocolUnpausedEvent(msg.sender);
-    }
-
-    /// @notice Check if the protocol is currently paused.
-    function getProtocolPaused() external view returns (bool) {
-        return LibProtocolStorage.isProtocolPaused();
-    }
-
-    /// @notice Suspend a venue at the protocol level. Owner-only.
-    /// @param venueId the venue to suspend.
-    /// @dev Unlike venue-level pause, only the protocol owner can lift a suspension.
-    function suspendVenue(uint256 venueId) external {
-        LibDiamond.enforceIsContractOwner();
-        if (!LibVenueStorage.venueExists(venueId)) revert LibVenueValidator.VenueNotFound();
-        LibProtocolAggregate.setVenueSuspended(venueId, true);
-        emit VenueSuspendedEvent(venueId, msg.sender);
-    }
-
-    /// @notice Unsuspend a previously suspended venue. Owner-only.
-    /// @param venueId the venue to unsuspend.
-    function unsuspendVenue(uint256 venueId) external {
-        LibDiamond.enforceIsContractOwner();
-        if (!LibVenueStorage.venueExists(venueId)) revert LibVenueValidator.VenueNotFound();
-        LibProtocolAggregate.setVenueSuspended(venueId, false);
-        emit VenueUnsuspendedEvent(venueId, msg.sender);
-    }
-
-    /// @notice Check if a venue is suspended by the protocol.
-    /// @param venueId the venue to check.
-    function getVenueSuspended(uint256 venueId) external view returns (bool) {
-        return LibProtocolStorage.isVenueSuspended(venueId);
-    }
-
-    // ---- Rescue ----
-
-    /// @notice Rescue any ETH accidentally sent to the Diamond. Owner-only.
-    /// @param recipient the address to receive the ETH.
-    function withdrawETH(address recipient) external {
-        LibDiamond.enforceIsContractOwner();
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No ETH to withdraw");
-        (bool success,) = recipient.call{value: balance}("");
-        require(success, "ETH transfer failed");
-        emit EthWithdrawn(recipient, balance);
-    }
-
-    /// @notice Rescue ERC-20 tokens from the Diamond. Owner-only.
-    /// @param token the ERC-20 token address.
-    /// @param recipient the address to receive the tokens.
-    /// @param amount the amount to withdraw.
-    function withdrawERC20(address token, address recipient, uint256 amount) external {
-        LibDiamond.enforceIsContractOwner();
-        require(token != address(0), "Invalid token");
-        require(recipient != address(0), "Invalid recipient");
-        require(amount > 0, "Zero amount");
-        TransferHelper._transferErc20(token, recipient, amount);
-        emit ERC20Withdrawn(token, recipient, amount);
     }
 }
