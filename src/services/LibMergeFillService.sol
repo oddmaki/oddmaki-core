@@ -38,6 +38,16 @@ library LibMergeFillService {
     // Maximum inline expiry retries per tryFill call (guards against degenerate all-expired books)
     uint256 constant MAX_INLINE_EXPIRY_RETRIES = 10;
 
+    /// @dev Heads + ask ticks for a maker-vs-maker merge cross.
+    struct MergeFillContext {
+        uint256 marketId;
+        bytes32 conditionId;
+        uint256 yesHead;
+        uint256 noHead;
+        uint256 yesAsk;
+        uint256 noAsk;
+    }
+
     /**
      * @notice Attempt a merge-to-fill.
      *         Returns true if a fill was executed.
@@ -50,34 +60,61 @@ library LibMergeFillService {
         returns (bool filled)
     {
         for (uint256 retries = 0; retries < MAX_INLINE_EXPIRY_RETRIES; retries++) {
-        uint256 yesAsk = LibOrderBookStorage.getTopOfBook(marketId, 0, Side.SELL);
-        uint256 noAsk  = LibOrderBookStorage.getTopOfBook(marketId, 1, Side.SELL);
+            uint256 yesAsk = LibOrderBookStorage.getTopOfBook(marketId, 0, Side.SELL);
+            uint256 noAsk  = LibOrderBookStorage.getTopOfBook(marketId, 1, Side.SELL);
 
-        if (yesAsk == 0 || noAsk == 0) return false;
+            if (yesAsk == 0 || noAsk == 0) return false;
 
-        // Fee-aware feasibility: asks must not exceed 1.0 - fees
-        MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
-        if (!LibFeeCalculatorService.checkMergeFeasibility(yesAsk, noAsk, md.tickSize, fees)) return false;
+            // Fee-aware feasibility: asks must not exceed 1.0 - fees
+            MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
+            if (!LibFeeCalculatorService.checkMergeFeasibility(yesAsk, noAsk, md.tickSize, fees)) return false;
 
-        uint256 yesHead = LibOrderBookStorage.getTickLevel(marketId, 0, Side.SELL, yesAsk).headOrderId;
-        uint256 noHead  = LibOrderBookStorage.getTickLevel(marketId, 1, Side.SELL, noAsk).headOrderId;
+            uint256 yesHead = LibOrderBookStorage.getTickLevel(marketId, 0, Side.SELL, yesAsk).headOrderId;
+            uint256 noHead  = LibOrderBookStorage.getTickLevel(marketId, 1, Side.SELL, noAsk).headOrderId;
 
-        if (yesHead == 0 || noHead == 0) return false;
+            if (yesHead == 0 || noHead == 0) return false;
 
-        if (LibOrderExpiryService.expireOrderInline(yesHead, md)) continue;
-        if (LibOrderExpiryService.expireOrderInline(noHead, md)) continue;
+            if (LibOrderExpiryService.expireOrderInline(yesHead, md)) continue;
+            if (LibOrderExpiryService.expireOrderInline(noHead, md)) continue;
 
-        Order storage yesOrder = LibOrderStorage.getOrder(yesHead);
-        Order storage noOrder  = LibOrderStorage.getOrder(noHead);
+            _executeFill(
+                MergeFillContext({
+                    marketId: marketId,
+                    conditionId: conditionId,
+                    yesHead: yesHead,
+                    noHead: noHead,
+                    yesAsk: yesAsk,
+                    noAsk: noAsk
+                }),
+                fees,
+                md
+            );
+            return true;
+        } // end retry loop
+        return false;
+    }
+
+    /**
+     * @dev Execute a merge cross between two resting SELL heads (one per outcome).
+     *      Both heads must reference live, unexpired orders. Splits the original
+     *      `tryFill` body verbatim — no behavior change.
+     *
+     *      NOTE: kept `private`. PR 3 will widen / add a market-taker variant.
+     */
+    function _executeFill(MergeFillContext memory ctx, MarketFees memory fees, MarketTradingData storage md)
+        private
+    {
+        Order storage yesOrder = LibOrderStorage.getOrder(ctx.yesHead);
+        Order storage noOrder  = LibOrderStorage.getOrder(ctx.noHead);
 
         uint256 qty = yesOrder.qty < noOrder.qty ? yesOrder.qty : noOrder.qty;
 
         // Merge the Diamond's pooled outcome tokens to release collateral
-        LibVaultPositionService.mergePositions(address(md.collateralToken), conditionId, qty);
+        LibVaultPositionService.mergePositions(address(md.collateralToken), ctx.conditionId, qty);
 
         // Pay each seller: maker gets full ask payout, taker pays all fees
-        uint256 yesCollateral = (qty * yesAsk * md.tickSize) / 1e18;
-        uint256 noCollateral  = (qty * noAsk  * md.tickSize) / 1e18;
+        uint256 yesCollateral = (qty * ctx.yesAsk * md.tickSize) / 1e18;
+        uint256 noCollateral  = (qty * ctx.noAsk  * md.tickSize) / 1e18;
 
         // Fee calculation: fee base is qty (notional = 1.0 per token set)
         FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(qty, fees);
@@ -85,7 +122,7 @@ library LibMergeFillService {
 
         // Maker/taker payout (must happen before order deletion which zeroes owner)
         {
-            bool yesIsTaker = (yesHead > noHead);
+            bool yesIsTaker = (ctx.yesHead > ctx.noHead);
             // Guard: cap fee deduction at taker's collateral to prevent underflow
             uint256 takerCol = yesIsTaker ? yesCollateral : noCollateral;
             uint256 takerFeeDeduction = feeTotal > takerCol ? takerCol : feeTotal;
@@ -99,31 +136,31 @@ library LibMergeFillService {
         }
 
         // Update YES order; always decrement totalQty first, then dequeue/delete fully-filled orders
-        LibOrderBookAggregate.recordFillOnBook(marketId, 0, Side.SELL, yesAsk, qty);
-        uint256 newYesQty = LibOrderAggregate.reduceOrderQty(yesHead, qty);
+        LibOrderBookAggregate.recordFillOnBook(ctx.marketId, 0, Side.SELL, ctx.yesAsk, qty);
+        uint256 newYesQty = LibOrderAggregate.reduceOrderQty(ctx.yesHead, qty);
         if (newYesQty == 0) {
-            LibOrderBookService.dequeueOrder(yesHead);
-            LibOrderAggregate.deleteOrder(yesHead);
+            LibOrderBookService.dequeueOrder(ctx.yesHead);
+            LibOrderAggregate.deleteOrder(ctx.yesHead);
         }
 
         // Update NO order
-        LibOrderBookAggregate.recordFillOnBook(marketId, 1, Side.SELL, noAsk, qty);
-        uint256 newNoQty = LibOrderAggregate.reduceOrderQty(noHead, qty);
+        LibOrderBookAggregate.recordFillOnBook(ctx.marketId, 1, Side.SELL, ctx.noAsk, qty);
+        uint256 newNoQty = LibOrderAggregate.reduceOrderQty(ctx.noHead, qty);
         if (newNoQty == 0) {
-            LibOrderBookService.dequeueOrder(noHead);
-            LibOrderAggregate.deleteOrder(noHead);
+            LibOrderBookService.dequeueOrder(ctx.noHead);
+            LibOrderAggregate.deleteOrder(ctx.noHead);
         }
 
         // Volume NOT recorded: merge-to-fill is sellers exiting, not buyers acquiring
 
         // Record fill
         uint256 fillId = LibFillAggregate.recordFill(
-            marketId, SettlementPath.MERGE, yesHead, noHead, qty, yesAsk
+            ctx.marketId, SettlementPath.MERGE, ctx.yesHead, ctx.noHead, qty, ctx.yesAsk
         );
 
         // Distribute fees from remaining collateral after seller payouts (no-op if fees are zero)
         LibFeeDistributionService.distributeFees(
-            address(md.collateralToken), breakdown, fees, marketId, fillId
+            address(md.collateralToken), breakdown, fees, ctx.marketId, fillId
         );
 
         // Route surplus collateral (rounding dust from tick-price discretization) to protocol treasury
@@ -132,13 +169,10 @@ library LibMergeFillService {
             uint256 surplus = qty - totalConsumed;
             if (fees.protocolTreasury != address(0)) {
                 LibVaultCollateralService.transferCollateral(address(md.collateralToken), fees.protocolTreasury, surplus);
-                emit SurplusRouted(marketId, fillId, surplus);
+                emit SurplusRouted(ctx.marketId, fillId, surplus);
             }
         }
 
-        emit MergeFill(marketId, qty, yesHead, noHead, yesAsk, noAsk);
-        return true;
-        } // end retry loop
-        return false;
+        emit MergeFill(ctx.marketId, qty, ctx.yesHead, ctx.noHead, ctx.yesAsk, ctx.noAsk);
     }
 }
