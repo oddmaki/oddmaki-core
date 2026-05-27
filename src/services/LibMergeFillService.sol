@@ -94,12 +94,111 @@ library LibMergeFillService {
         return false;
     }
 
+    // -------------------------------------------------------------------------
+    // Market-taker merge primitive — taker SELL against an opposite-outcome
+    // SELL resting maker. Used by `LibMarketTakeService` to convert the
+    // user's outcome tokens back into collateral via the CTF merge path.
+    // -------------------------------------------------------------------------
+
+    struct MarketFillResult {
+        uint256 fillQty;        // shares of taker's outcome consumed
+        uint256 grossProceeds;  // taker's gross per-fill payout (pre-fee)
+        uint256 netProceeds;    // taker's net per-fill payout (post-fee)
+        uint256 fillId;
+    }
+
+    struct MarketTakerMergeParams {
+        uint256 marketId;
+        bytes32 conditionId;
+        uint256 outcomeId;                // taker's outcome (they sell these)
+        uint256 oppositeMakerSellOrderId; // resting SELL head on the opposite outcome
+        uint256 oppositeAskTick;          // maker's ask tick
+        address taker;
+        uint256 remainingQty;             // taker's remaining tokens
+    }
+
+    /// @notice Execute a single merge-to-fill cross where the taker is a market
+    ///         SELL order and the maker is an opposite-outcome resting SELL.
+    ///         Diamond merges qty YES + qty NO into qty collateral, pays maker
+    ///         their ask price (no fee — they're the maker), pays taker the
+    ///         complementary price net of fees.
+    function executeMarketTakerMerge(
+        MarketTakerMergeParams memory params,
+        MarketFees memory fees,
+        MarketTradingData storage md
+    ) internal returns (MarketFillResult memory r) {
+        Order storage makerOrder = LibOrderStorage.getOrder(params.oppositeMakerSellOrderId);
+        if (makerOrder.id == 0) return r;
+
+        uint256 fullTicks = 1e18 / md.tickSize;
+        if (params.oppositeAskTick == 0 || params.oppositeAskTick >= fullTicks) return r;
+
+        uint256 fillQty = params.remainingQty < makerOrder.qty ? params.remainingQty : makerOrder.qty;
+        if (fillQty == 0) return r;
+
+        uint256 takerTick = fullTicks - params.oppositeAskTick;
+        uint256 makerPayout = (fillQty * params.oppositeAskTick * md.tickSize) / 1e18;
+        uint256 takerGross  = (fillQty * takerTick * md.tickSize) / 1e18;
+
+        // Merge: CTF consumes the diamond's qty YES + qty NO and returns qty collateral.
+        LibVaultPositionService.mergePositions(address(md.collateralToken), params.conditionId, fillQty);
+
+        // Fees on the merge notional (qty).
+        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(fillQty, fees);
+        uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
+        uint256 takerNet = takerGross > feeTotal ? takerGross - feeTotal : 0;
+
+        // Payouts (must happen before order deletion which zeroes maker.owner).
+        LibVaultCollateralService.transferCollateral(address(md.collateralToken), makerOrder.owner, makerPayout);
+        if (takerNet > 0) {
+            LibVaultCollateralService.transferCollateral(address(md.collateralToken), params.taker, takerNet);
+        }
+
+        // Update maker order on its book.
+        uint256 otherIdx = params.outcomeId == 0 ? 1 : 0;
+        LibOrderBookAggregate.recordFillOnBook(params.marketId, otherIdx, Side.SELL, params.oppositeAskTick, fillQty);
+        uint256 newQty = LibOrderAggregate.reduceOrderQty(params.oppositeMakerSellOrderId, fillQty);
+        if (newQty == 0) {
+            LibOrderBookService.dequeueOrder(params.oppositeMakerSellOrderId);
+            LibOrderAggregate.deleteOrder(params.oppositeMakerSellOrderId);
+        }
+
+        // Volume is NOT recorded for merge — sellers are exiting, not acquiring.
+        // (Parity with the matching-engine merge path.)
+
+        // Map taker outcome to MergeFill event's (yesOrderId, noOrderId, yesTick, noTick) ordering.
+        uint256 yesOrderId; uint256 noOrderId; uint256 yesTick; uint256 noTick;
+        if (params.outcomeId == 0) {
+            yesOrderId = 0;
+            noOrderId = params.oppositeMakerSellOrderId;
+            yesTick = takerTick;
+            noTick = params.oppositeAskTick;
+        } else {
+            yesOrderId = params.oppositeMakerSellOrderId;
+            noOrderId = 0;
+            yesTick = params.oppositeAskTick;
+            noTick = takerTick;
+        }
+
+        r.fillId = LibFillAggregate.recordFill(
+            params.marketId, SettlementPath.MERGE, yesOrderId, noOrderId, fillQty, yesTick
+        );
+
+        LibFeeDistributionService.distributeFees(
+            address(md.collateralToken), breakdown, fees, params.marketId, r.fillId
+        );
+
+        emit MergeFill(params.marketId, fillQty, yesOrderId, noOrderId, yesTick, noTick);
+
+        r.fillQty = fillQty;
+        r.grossProceeds = takerGross;
+        r.netProceeds = takerNet;
+    }
+
     /**
      * @dev Execute a merge cross between two resting SELL heads (one per outcome).
      *      Both heads must reference live, unexpired orders. Splits the original
      *      `tryFill` body verbatim — no behavior change.
-     *
-     *      NOTE: kept `private`. PR 3 will widen / add a market-taker variant.
      */
     function _executeFill(MergeFillContext memory ctx, MarketFees memory fees, MarketTradingData storage md)
         private

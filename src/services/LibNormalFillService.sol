@@ -101,14 +101,165 @@ library LibNormalFillService {
         return false;
     }
 
+    // -------------------------------------------------------------------------
+    // Market-taker primitives — single-fill execution against a specific
+    // resting maker order. Used by `LibMarketTakeService` (PR 3) to walk the
+    // book step-by-step while deciding cheapest path per iteration.
+    // -------------------------------------------------------------------------
+
+    /// @dev Outcome of executing one market-taker fill on a specific maker order.
+    struct MarketFillResult {
+        uint256 fillQty;             // shares filled this step
+        uint256 collateralConsumed;  // taker's budget deducted (cost + taker fee)
+        uint256 fillId;              // fill record ID
+    }
+
+    /// @dev Inputs for executing a single market-taker BUY against a maker SELL head.
+    struct MarketTakerBuyParams {
+        uint256 marketId;
+        uint256 outcomeId;
+        uint256 makerSellOrderId;    // resting SELL head on `outcomeId`
+        uint256 askTick;             // maker's ask tick (= current bestAsk on that level)
+        address taker;               // market-order caller (gets the outcome tokens)
+        uint256 remainingBudget;     // taker's unspent collateral
+    }
+
+    /// @notice Execute a single normal-fill cross where the taker is a market
+    ///         BUY order (no resting taker order on the book). Returns 0
+    ///         filledQty when the budget is too small to fill even one share
+    ///         after fees.
+    /// @dev Mirrors the per-iteration body of `LibMarketOrderService.placeMarketOrder`,
+    ///      packaged so the multi-path take service can call it directly. Maker is
+    ///      always the resting SELL head; taker is `params.taker` (no order ID, so
+    ///      fills are recorded with `order1Id = 0`).
+    function executeMarketTakerBuy(
+        MarketTakerBuyParams memory params,
+        MarketFees memory fees,
+        MarketTradingData storage md
+    ) internal returns (MarketFillResult memory r) {
+        Order storage sellOrder = LibOrderStorage.getOrder(params.makerSellOrderId);
+        if (sellOrder.id == 0) return r;
+
+        uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
+        uint256 pricePerToken = params.askTick * md.tickSize;
+        // affordableQty = budget * 1e18 * BPS / (pricePerToken * (BPS + feeBps))
+        uint256 affordableQty = (params.remainingBudget * 1e18 * LibFeeCalculatorService.BPS_DENOMINATOR)
+            / (pricePerToken * (LibFeeCalculatorService.BPS_DENOMINATOR + totalFeeBps));
+        uint256 fillQty = affordableQty < sellOrder.qty ? affordableQty : sellOrder.qty;
+        if (fillQty == 0) return r;
+
+        uint256 cost = (fillQty * pricePerToken) / 1e18;
+        if (cost == 0) return r;
+
+        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(cost, fees);
+        uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
+
+        // Settlement: maker (resting seller) gets full cost; taker pays cost + fee.
+        LibVaultCollateralService.transferCollateral(address(md.collateralToken), sellOrder.owner, cost);
+        LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[params.outcomeId], params.taker, fillQty);
+
+        // Record fill (order1Id = 0 → market-taker side).
+        r.fillId = LibFillAggregate.recordFill(
+            params.marketId, SettlementPath.NORMAL, 0, params.makerSellOrderId, fillQty, params.askTick
+        );
+
+        LibFeeDistributionService.distributeFees(
+            address(md.collateralToken), breakdown, fees, params.marketId, r.fillId
+        );
+
+        // Update sell order.
+        LibOrderBookAggregate.recordFillOnBook(params.marketId, params.outcomeId, Side.SELL, params.askTick, fillQty);
+        uint256 newQty = LibOrderAggregate.reduceOrderQty(params.makerSellOrderId, fillQty);
+        if (newQty == 0) {
+            LibOrderBookService.dequeueOrder(params.makerSellOrderId);
+            LibOrderAggregate.deleteOrder(params.makerSellOrderId);
+        }
+
+        LibMarketTradingAggregate.recordTotalVolume(params.marketId, params.outcomeId, cost);
+        LibMarketTradingAggregate.recordLastTradeTick(params.marketId, params.outcomeId, params.askTick);
+
+        emit OrderFilled(0, params.makerSellOrderId, params.marketId, params.outcomeId, fillQty, params.askTick);
+        emit TradeExecuted(
+            params.marketId, params.outcomeId, r.fillId, params.askTick, fillQty,
+            md.totalVolume[params.outcomeId], block.timestamp
+        );
+
+        r.fillQty = fillQty;
+        r.collateralConsumed = cost + feeTotal;
+    }
+
+    /// @dev Inputs for executing a single market-taker SELL against a maker BUY head.
+    struct MarketTakerSellParams {
+        uint256 marketId;
+        uint256 outcomeId;
+        uint256 makerBuyOrderId;     // resting BUY head on `outcomeId`
+        uint256 bidTick;             // maker's bid tick
+        address taker;               // market-order caller (receives net proceeds)
+        uint256 remainingQty;        // taker's unsold tokens
+    }
+
+    /// @notice Execute a single normal-fill cross where the taker is a market
+    ///         SELL order. Maker (buyer) gets the outcome tokens at full
+    ///         deposit; taker (seller) receives `proceeds - fee` collateral.
+    function executeMarketTakerSell(
+        MarketTakerSellParams memory params,
+        MarketFees memory fees,
+        MarketTradingData storage md
+    ) internal returns (MarketFillResult memory r) {
+        Order storage buyOrder = LibOrderStorage.getOrder(params.makerBuyOrderId);
+        if (buyOrder.id == 0) return r;
+
+        uint256 fillQty = params.remainingQty < buyOrder.qty ? params.remainingQty : buyOrder.qty;
+        if (fillQty == 0) return r;
+
+        uint256 pricePerToken = params.bidTick * md.tickSize;
+        uint256 proceeds = (fillQty * pricePerToken) / 1e18;
+        if (proceeds == 0) return r;
+
+        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(proceeds, fees);
+        uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
+        uint256 sellerNet = proceeds - feeTotal;
+
+        // Settlement: taker gets proceeds net of fees; maker (buyer) gets outcome tokens.
+        LibVaultCollateralService.transferCollateral(address(md.collateralToken), params.taker, sellerNet);
+        LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[params.outcomeId], buyOrder.owner, fillQty);
+
+        // Record fill (order2Id = 0 → market-taker side).
+        r.fillId = LibFillAggregate.recordFill(
+            params.marketId, SettlementPath.NORMAL, params.makerBuyOrderId, 0, fillQty, params.bidTick
+        );
+
+        LibFeeDistributionService.distributeFees(
+            address(md.collateralToken), breakdown, fees, params.marketId, r.fillId
+        );
+
+        LibOrderBookAggregate.recordFillOnBook(params.marketId, params.outcomeId, Side.BUY, params.bidTick, fillQty);
+        uint256 newQty = LibOrderAggregate.reduceOrderQty(params.makerBuyOrderId, fillQty);
+        if (newQty == 0) {
+            LibOrderBookService.dequeueOrder(params.makerBuyOrderId);
+            LibOrderAggregate.deleteOrder(params.makerBuyOrderId);
+        }
+
+        LibMarketTradingAggregate.recordTotalVolume(params.marketId, params.outcomeId, proceeds);
+        LibMarketTradingAggregate.recordLastTradeTick(params.marketId, params.outcomeId, params.bidTick);
+
+        emit OrderFilled(params.makerBuyOrderId, 0, params.marketId, params.outcomeId, fillQty, params.bidTick);
+        emit TradeExecuted(
+            params.marketId, params.outcomeId, r.fillId, params.bidTick, fillQty,
+            md.totalVolume[params.outcomeId], block.timestamp
+        );
+
+        r.fillQty = fillQty;
+        // Sell-side "collateralConsumed" means shares consumed from the taker's input. Cost
+        // semantics differ — the take service uses the dedicated TakeSellResult shape.
+        r.collateralConsumed = fillQty;
+    }
+
     /**
      * @dev Execute the cross between `ctx.buyHead` (maker or taker) and `ctx.sellHead`
      *      (maker or taker) at the current top-of-book ticks. Both order IDs must reference
      *      live, unexpired orders. Maker/taker is resolved by FIFO order ID. Splits the
      *      original `tryFill` body verbatim — no behavior change.
-     *
-     *      NOTE: kept `private` for now. PR 3 will widen to `internal` (or expose a
-     *      market-taker variant) so the take service can call it directly.
      */
     function _executeFill(NormalFillContext memory ctx, MarketTradingData storage md) private {
         Order storage buyOrder = LibOrderStorage.getOrder(ctx.buyHead);

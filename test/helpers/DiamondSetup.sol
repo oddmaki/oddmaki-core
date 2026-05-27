@@ -199,9 +199,11 @@ contract DiamondSetup is Test {
         marketGroupSelectors[5] = MarketGroupFacet.getNextGroupId.selector;
         cuts[11] = _cut(address(_marketGroupFacet), marketGroupSelectors);
 
-        bytes4[] memory marketOrdersSelectors = new bytes4[](2);
+        bytes4[] memory marketOrdersSelectors = new bytes4[](4);
         marketOrdersSelectors[0] = MarketOrdersFacet.placeMarketOrder.selector;
         marketOrdersSelectors[1] = MarketOrdersFacet.placeMarketSell.selector;
+        marketOrdersSelectors[2] = MarketOrdersFacet.placeMarketBuyV2.selector;
+        marketOrdersSelectors[3] = MarketOrdersFacet.placeMarketSellV2.selector;
         cuts[12] = _cut(address(_marketOrdersFacet), marketOrdersSelectors);
 
         bytes4[] memory resolutionSelectors = new bytes4[](6);

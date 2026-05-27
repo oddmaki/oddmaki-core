@@ -59,4 +59,9 @@ library LibMarketOrderValidator {
         if (minPriceTick == 0) revert InvalidMinPrice();
         if (outcomeId > 1) revert InvalidOutcome();
     }
+
+    /// @notice Standalone outcome-id check (binary markets: 0 or 1).
+    function validateOutcomeId(uint256 outcomeId) internal pure {
+        if (outcomeId > 1) revert InvalidOutcome();
+    }
 }

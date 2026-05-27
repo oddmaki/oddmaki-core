@@ -106,12 +106,123 @@ library LibMintFillService {
         return false;
     }
 
+    // -------------------------------------------------------------------------
+    // Market-taker mint primitive — taker BUY against an opposite-outcome BUY
+    // resting maker. Used by `LibMarketTakeService` to fill the user's outcome
+    // by splitting collateral with a counterparty on the other outcome.
+    // -------------------------------------------------------------------------
+
+    /// @dev Outcome of executing a single market-taker mint fill.
+    struct MarketFillResult {
+        uint256 fillQty;
+        uint256 collateralConsumed;  // taker's budget deducted (deposit + fee)
+        uint256 fillId;
+    }
+
+    struct MarketTakerMintParams {
+        uint256 marketId;
+        bytes32 conditionId;
+        uint256 outcomeId;               // taker's outcome (gets these tokens)
+        uint256 oppositeMakerBuyOrderId; // resting BUY head on the OPPOSITE outcome
+        uint256 oppositeBidTick;         // maker's bid tick
+        address taker;
+        uint256 remainingBudget;
+    }
+
+    /// @notice Execute a single mint-to-fill cross where the taker is a market
+    ///         BUY order and the maker is an opposite-outcome resting BUY.
+    ///         Splits CTF collateral; taker gets `params.outcomeId` tokens,
+    ///         maker gets the other outcome's tokens.
+    /// @dev Affordable qty derived from the taker's remaining budget:
+    ///         B = qty * complementTick * tickSize / 1e18 + qty * feeBps / BPS
+    ///       The maker's deposit (already locked) + the taker's deposit
+    ///       exactly cover the CTF split + fees; there is no surplus to route.
+    function executeMarketTakerMint(
+        MarketTakerMintParams memory params,
+        MarketFees memory fees,
+        MarketTradingData storage md
+    ) internal returns (MarketFillResult memory r) {
+        Order storage makerOrder = LibOrderStorage.getOrder(params.oppositeMakerBuyOrderId);
+        if (makerOrder.id == 0) return r;
+
+        uint256 fullTicks = 1e18 / md.tickSize;
+        if (params.oppositeBidTick == 0 || params.oppositeBidTick >= fullTicks) return r;
+        uint256 takerTick = fullTicks - params.oppositeBidTick;
+        uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
+
+        // Affordable qty = B * 1e18 * BPS / (takerTick * tickSize * BPS + 1e18 * feeBps)
+        uint256 denom = takerTick * md.tickSize * LibFeeCalculatorService.BPS_DENOMINATOR
+            + 1e18 * totalFeeBps;
+        if (denom == 0) return r;
+        uint256 affordableQty = (params.remainingBudget * 1e18 * LibFeeCalculatorService.BPS_DENOMINATOR) / denom;
+        uint256 fillQty = affordableQty < makerOrder.qty ? affordableQty : makerOrder.qty;
+        if (fillQty == 0) return r;
+
+        // Mint: CTF.splitPosition consumes `fillQty` collateral from the diamond's pool
+        //       (taker deposit + maker deposit already in the pool), producing
+        //       fillQty YES + fillQty NO tokens.
+        LibVaultPositionService.splitPosition(address(md.collateralToken), params.conditionId, fillQty);
+
+        uint256 otherIdx = params.outcomeId == 0 ? 1 : 0;
+
+        // Deliver outcome tokens — taker gets their outcome, maker gets the other.
+        LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[params.outcomeId], params.taker, fillQty);
+        LibVaultOutcomeTokenService.transferOutcomeTokens(md.positionIds[otherIdx], makerOrder.owner, fillQty);
+
+        // Update maker (opposite-outcome BUY) order on its book.
+        LibOrderBookAggregate.recordFillOnBook(params.marketId, otherIdx, Side.BUY, params.oppositeBidTick, fillQty);
+        uint256 newQty = LibOrderAggregate.reduceOrderQty(params.oppositeMakerBuyOrderId, fillQty);
+        if (newQty == 0) {
+            LibOrderBookService.dequeueOrder(params.oppositeMakerBuyOrderId);
+            LibOrderAggregate.deleteOrder(params.oppositeMakerBuyOrderId);
+        }
+
+        // Volume + last-trade tick on both outcomes.
+        uint256 takerDeposit = (fillQty * takerTick * md.tickSize) / 1e18;
+        uint256 makerDeposit = (fillQty * params.oppositeBidTick * md.tickSize) / 1e18;
+        LibMarketTradingAggregate.recordTotalVolume(params.marketId, params.outcomeId, takerDeposit);
+        LibMarketTradingAggregate.recordTotalVolume(params.marketId, otherIdx, makerDeposit);
+        LibMarketTradingAggregate.recordLastTradeTick(params.marketId, params.outcomeId, takerTick);
+        LibMarketTradingAggregate.recordLastTradeTick(params.marketId, otherIdx, params.oppositeBidTick);
+
+        // Fee math + distribution (notional = qty per mint convention).
+        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(fillQty, fees);
+
+        // Map taker outcome to MintFill event's (yesOrderId, noOrderId, yesTick, noTick) ordering.
+        uint256 yesOrderId; uint256 noOrderId; uint256 yesTick; uint256 noTick;
+        if (params.outcomeId == 0) {
+            yesOrderId = 0;
+            noOrderId = params.oppositeMakerBuyOrderId;
+            yesTick = takerTick;
+            noTick = params.oppositeBidTick;
+        } else {
+            yesOrderId = params.oppositeMakerBuyOrderId;
+            noOrderId = 0;
+            yesTick = params.oppositeBidTick;
+            noTick = takerTick;
+        }
+
+        r.fillId = LibFillAggregate.recordFill(
+            params.marketId, SettlementPath.MINT, yesOrderId, noOrderId, fillQty, yesTick
+        );
+
+        LibFeeDistributionService.distributeFees(
+            address(md.collateralToken), breakdown, fees, params.marketId, r.fillId
+        );
+
+        emit MintFill(params.marketId, fillQty, yesOrderId, noOrderId, yesTick, noTick);
+        emit TradeExecuted(params.marketId, 0, r.fillId, yesTick, fillQty, md.totalVolume[0], block.timestamp);
+        emit TradeExecuted(params.marketId, 1, r.fillId, noTick, fillQty, md.totalVolume[1], block.timestamp);
+
+        uint256 feeTotal = breakdown.totalFee + breakdown.remainder;
+        r.fillQty = fillQty;
+        r.collateralConsumed = takerDeposit + feeTotal;
+    }
+
     /**
      * @dev Execute a mint cross between two resting BUY heads (one per outcome).
      *      Both heads must reference live, unexpired orders. Splits the original
      *      `tryFill` body verbatim — no behavior change.
-     *
-     *      NOTE: kept `private`. PR 3 will widen / add a market-taker variant.
      */
     function _executeFill(MintFillContext memory ctx, MarketFees memory fees, MarketTradingData storage md)
         private
