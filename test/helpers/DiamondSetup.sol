@@ -167,13 +167,14 @@ contract DiamondSetup is Test {
         venueSelectors[11] = VenueFacet.canCreateMarket.selector;
         cuts[8] = _cut(address(_venueFacet), venueSelectors);
 
-        bytes4[] memory orderBookSelectors = new bytes4[](6);
+        bytes4[] memory orderBookSelectors = new bytes4[](7);
         orderBookSelectors[0] = OrderBookFacet.getTopOfBook.selector;
         orderBookSelectors[1] = OrderBookFacet.getTickLevel.selector;
         orderBookSelectors[2] = OrderBookFacet.getMarkPrice.selector;
         orderBookSelectors[3] = OrderBookFacet.getFill.selector;
         orderBookSelectors[4] = OrderBookFacet.getNextFillId.selector;
         orderBookSelectors[5] = OrderBookFacet.canMatchOrders.selector;
+        orderBookSelectors[6] = OrderBookFacet.getImpliedTopOfBook.selector;
         cuts[9] = _cut(address(_orderBookFacet), orderBookSelectors);
 
         bytes4[] memory protocolSelectors = new bytes4[](10);

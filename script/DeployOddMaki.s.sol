@@ -448,13 +448,14 @@ contract DeployOddMakiScript is Script {
         cuts[8] = _cut(address(venueFacet), venueSelectors);
 
         // 9: OrderBookFacet
-        bytes4[] memory orderBookSelectors = new bytes4[](6);
+        bytes4[] memory orderBookSelectors = new bytes4[](7);
         orderBookSelectors[0] = OrderBookFacet.getTopOfBook.selector;
         orderBookSelectors[1] = OrderBookFacet.getTickLevel.selector;
         orderBookSelectors[2] = OrderBookFacet.getMarkPrice.selector;
         orderBookSelectors[3] = OrderBookFacet.getFill.selector;
         orderBookSelectors[4] = OrderBookFacet.getNextFillId.selector;
         orderBookSelectors[5] = OrderBookFacet.canMatchOrders.selector;
+        orderBookSelectors[6] = OrderBookFacet.getImpliedTopOfBook.selector;
         cuts[9] = _cut(address(orderBookFacet), orderBookSelectors);
 
         // 10: ProtocolFacet
