@@ -65,6 +65,27 @@ contract TickLevelFullFillTest is Test, DiamondSetup {
         vm.stopPrank();
     }
 
+    /// @dev Seed defined mark price for the V2 market-order path.
+    function _seedMark(uint256 tick) internal {
+        uint256 q = 1e16;
+        address seeder = address(0xBEEF1);
+        collateral.mint(seeder, _collateral(tick, q));
+        vm.prank(seeder);
+        collateral.approve(address(diamond), _collateral(tick, q));
+        vm.prank(seeder);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, q, 0);
+
+        collateral.mint(seeder, q);
+        vm.startPrank(seeder);
+        collateral.approve(address(diamond), q);
+        VaultFacet(address(diamond)).splitPosition(marketId, q);
+        ctf.setApprovalForAll(address(diamond), true);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, q, 0);
+        vm.stopPrank();
+
+        MatchingFacet(address(diamond)).matchOrders(marketId, 10);
+    }
+
     // -------------------------------------------------------------------------
     // Setup
     // -------------------------------------------------------------------------
@@ -274,10 +295,13 @@ contract TickLevelFullFillTest is Test, DiamondSetup {
         assertEq(sellBefore.totalQty, qty, "sell totalQty before market order");
         assertEq(sellBefore.depth, 1, "sell depth before market order");
 
+        // Seed defined mark price (no fees in this venue setup, so this is fee-free).
+        _seedMark(tick);
+
         // ALICE places a market BUY that consumes the entire sell order
         _mintAndApprove(ALICE, cost);
         vm.prank(ALICE);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, cost, tick, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, cost, 2000, MarketOrderType.FOK);
 
         // Sell tick level must be fully cleared
         TickLevel memory sellAfter = OrderBookFacet(address(diamond)).getTickLevel(marketId, 0, Side.SELL, tick);

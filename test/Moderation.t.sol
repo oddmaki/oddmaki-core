@@ -194,8 +194,10 @@ contract ModerationTest is Test, DiamondSetup {
         uint256 col = _collateral(50, 100e6);
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
+        // V2 facet runs the pause check before mark-price resolution, so this
+        // still reverts with MarketPaused even though the market has no mark.
         vm.expectRevert(LibMarketTradingValidator.MarketPaused.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, 50, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, 2000, MarketOrderType.FAK);
     }
 
     function test_marketPause_blocksSplitPosition() public {

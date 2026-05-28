@@ -4,10 +4,10 @@
 pragma solidity 0.8.28;
 
 import {LibOrderBookStorage} from "../storage/LibOrderBookStorage.sol";
-import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibFillStorage} from "../storage/LibFillStorage.sol";
 import {LibMatchingPreviewService} from "../services/LibMatchingPreviewService.sol";
-import {Side, TickLevel, MarketTradingData, Fill, MatchPreview} from "../interfaces/Types.sol";
+import {LibMarkPriceService} from "../services/LibMarkPriceService.sol";
+import {Side, TickLevel, Fill, MatchPreview} from "../interfaces/Types.sol";
 
 /**
  * @title OrderBookFacet
@@ -36,8 +36,13 @@ contract OrderBookFacet {
         return LibOrderBookStorage.getTickLevel(marketId, outcomeId, side, tick);
     }
 
-    /// @notice Get the mark price for an outcome. Uses midpoint if spread <= 10 ticks,
-    ///         falls back to the last trade tick, or returns undefined.
+    /// @notice Get the mark price for an outcome. Uses an *implied* midpoint that
+    ///         accounts for cross-outcome liquidity (mint/merge complement) when the
+    ///         implied spread is within the per-tick-size threshold (default ~$0.10).
+    ///         Falls back to the last trade tick (queried outcome, or complement of
+    ///         the other outcome's last trade), then returns undefined.
+    /// @dev    Delegates to {LibMarkPriceService} so the matching engine, market-take
+    ///         service, and external readers all share one canonical implementation.
     /// @param marketId  the market to query.
     /// @param outcomeId the outcome (0 = YES, 1 = NO).
     /// @return priceTick the mark price tick.
@@ -47,19 +52,21 @@ contract OrderBookFacet {
         view
         returns (uint256 priceTick, bool isDefined)
     {
-        uint256 bestBid = LibOrderBookStorage.getTopOfBook(marketId, outcomeId, Side.BUY);
-        uint256 bestAsk = LibOrderBookStorage.getTopOfBook(marketId, outcomeId, Side.SELL);
+        return LibMarkPriceService.getMarkPriceTick(marketId, outcomeId);
+    }
 
-        if (bestBid > 0 && bestAsk > 0 && (bestAsk - bestBid) <= 10) {
-            return ((bestBid + bestAsk) / 2, true);
-        }
-
-        uint256 lastTrade = LibMarketTradingStorage.getMarketTradingData(marketId).lastTradeTick[outcomeId];
-        if (lastTrade > 0) {
-            return (lastTrade, true);
-        }
-
-        return (0, false);
+    /// @notice Implied top-of-book for an outcome, accounting for cross-outcome
+    ///         liquidity via the mint/merge complement.
+    /// @dev Useful for SDK previews ("what's the cheapest price I could BUY at?")
+    ///      without recomputing the cross-outcome math client-side.
+    /// @return impliedBid Highest tick at which the outcome can be bought (0 if none).
+    /// @return impliedAsk Lowest tick at which the outcome can be sold (0 if none).
+    function getImpliedTopOfBook(uint256 marketId, uint256 outcomeId)
+        external
+        view
+        returns (uint256 impliedBid, uint256 impliedAsk)
+    {
+        return LibMarkPriceService.getImpliedTopOfBook(marketId, outcomeId);
     }
 
     /// @notice Check whether any orders are matchable in the given market.
