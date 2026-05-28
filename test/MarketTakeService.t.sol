@@ -23,7 +23,7 @@ import {MockERC20} from "./helpers/MockERC20.sol";
 /**
  * @title MarketTakeServiceTest
  * @notice End-to-end coverage for PR 3: multi-path market BUY / SELL via
- *         placeMarketBuyV2 / placeMarketSellV2, including the user-reported
+ *         placeMarketBuy / placeMarketSell, including the user-reported
  *         bug scenario (mint-fill against opposite-outcome resting bid).
  *
  *         Venue mirrors the production fee config the user runs:
@@ -134,7 +134,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     // =========================================================================
 
     /// @notice Market BUY against a same-outcome ask with no opposite liquidity.
-    function test_buyV2_normalPath_singleAsk() public {
+    function test_buy_normalPath_singleAsk() public {
         // Up has an ASK at 50, no other liquidity. markTick falls back to
         // last-trade; seed a same-outcome trade at 50 so mark is defined.
         _seedLastTrade(0, 50);
@@ -148,7 +148,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         _mintAndApprove(TAKER, budget);
 
         vm.prank(TAKER);
-        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 500 /* 5% slippage */, MarketOrderType.FAK
         );
 
@@ -165,7 +165,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     /// @notice Up bid at 47 resting, Down asks empty, Down bids at 53/54 resting.
     ///         Market BUY Down with 5% slippage above mark must mint-fill
     ///         against Up at 47 (taker tick = 100 − 47 = 53).
-    function test_buyV2_mintPath_userScenario() public {
+    function test_buy_mintPath_userScenario() public {
         // Seed a Down last-trade so the mark price has a fallback when the
         // implied book is crossed (47 / 46 → crossed → falls to last trade).
         _seedLastTrade(1, 55);
@@ -190,7 +190,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         assertEq(markTick, 55, "Down mark = last trade tick");
 
         vm.prank(TAKER);
-        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 1, budget, 500, MarketOrderType.FAK
         );
 
@@ -208,7 +208,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     /// @notice Two paths available; expect the cheaper one to fill first.
     ///         Up ask at 60 (normal cost ~= 60*(1.011) = 61), Down bid at 50
     ///         (mint cost = 50 + ceil(1.1) = 52). Mint cheaper -> mint first.
-    function test_buyV2_multiPath_picksMintFirstWhenCheaper() public {
+    function test_buy_multiPath_picksMintFirstWhenCheaper() public {
         _seedLastTrade(0, 55); // mark for Up
 
         _splitForUser(BOB, 100e18);
@@ -221,7 +221,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         _mintAndApprove(TAKER, budget);
 
         vm.prank(TAKER);
-        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 2000, MarketOrderType.FAK
         );
 
@@ -240,7 +240,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     /// @notice Mark@50, slippage 0% → cap = 50 ticks. Asks @55 (normal cost
     ///         ≈55.6) and Down bid at 20 (mint cost = 80 + 1.1 = 82). Both
     ///         above cap → no fill within slippage → reverts with NoLiquidity.
-    function test_buyV2_slippageZero_revertsWhenNoCrossable() public {
+    function test_buy_slippageZero_revertsWhenNoCrossable() public {
         _seedLastTrade(0, 50);
 
         _splitForUser(BOB, 100e18);
@@ -254,27 +254,27 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
 
         vm.prank(TAKER);
         vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 0, MarketOrderType.FAK
         );
     }
 
-    function test_buyV2_slippageOverMax_reverts() public {
+    function test_buy_slippageOverMax_reverts() public {
         _seedLastTrade(0, 50);
         _mintAndApprove(TAKER, 100e18);
         vm.prank(TAKER);
         vm.expectRevert(LibMarketTakeService.SlippageTooHigh.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, 100e18, 5000, MarketOrderType.FAK
         );
     }
 
-    function test_buyV2_undefinedMark_reverts() public {
+    function test_buy_undefinedMark_reverts() public {
         // No orders, no trades → mark price undefined.
         _mintAndApprove(TAKER, 100e18);
         vm.prank(TAKER);
         vm.expectRevert(LibMarketTakeService.NoReferencePrice.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, 100e18, 500, MarketOrderType.FAK
         );
     }
@@ -283,7 +283,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     // BUY — FOK vs FAK
     // =========================================================================
 
-    function test_buyV2_FAK_refundsUnusedBudget() public {
+    function test_buy_FAK_refundsUnusedBudget() public {
         _seedLastTrade(0, 50);
 
         // Small ask: 10 tokens at 50¢. Taker budgets way more.
@@ -295,7 +295,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         uint256 balBefore = collateral.balanceOf(TAKER);
 
         vm.prank(TAKER);
-        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 500, MarketOrderType.FAK
         );
 
@@ -308,7 +308,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         assertEq(r.collateralSpent + r.unusedCollateral, budget, "spent + unused == budget");
     }
 
-    function test_buyV2_FOK_revertsOnPartial() public {
+    function test_buy_FOK_revertsOnPartial() public {
         _seedLastTrade(0, 50);
 
         _splitForUser(BOB, 10e18);
@@ -319,7 +319,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
 
         vm.prank(TAKER);
         vm.expectRevert(LibMarketOrderValidator.InsufficientLiquidityForFOK.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketBuyV2(
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 500, MarketOrderType.FOK
         );
     }
@@ -328,7 +328,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     // SELL — mirror coverage (normal + merge paths)
     // =========================================================================
 
-    function test_sellV2_mergePath_userScenarioMirror() public {
+    function test_sell_mergePath_userScenarioMirror() public {
         // Up ask @55 resting + Down ask @45 resting → merge cross feasible.
         // Taker market SELL Down tokens; expected to merge against Up @55.
         _seedLastTrade(1, 50); // Down mark defined
@@ -339,7 +339,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         _splitForUser(TAKER, 100e18); // give taker Down tokens via split
 
         vm.prank(TAKER);
-        MarketSellResult memory r = MarketOrdersFacet(address(diamond)).placeMarketSellV2(
+        MarketSellResult memory r = MarketOrdersFacet(address(diamond)).placeMarketSell(
             marketId, 1, 50e18 /* sell 50 Down */, 2000, MarketOrderType.FAK
         );
 
@@ -350,7 +350,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         assertGt(collateral.balanceOf(ALICE), 0, "Up maker paid out");
     }
 
-    function test_sellV2_FAK_refundsUnsoldTokens() public {
+    function test_sell_FAK_refundsUnsoldTokens() public {
         _seedLastTrade(0, 50);
 
         _mintAndApprove(ALICE, _collateral(50, 5e18));
@@ -360,7 +360,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         uint256 takerUpBefore = ctf.balanceOf(TAKER, positionIds[0]);
 
         vm.prank(TAKER);
-        MarketSellResult memory r = MarketOrdersFacet(address(diamond)).placeMarketSellV2(
+        MarketSellResult memory r = MarketOrdersFacet(address(diamond)).placeMarketSell(
             marketId, 0, 100e18, 500, MarketOrderType.FAK
         );
 
@@ -370,7 +370,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         assertEq(takerUpBefore - takerUpAfter, r.tokensSold, "balance delta == sold");
     }
 
-    function test_sellV2_FOK_revertsOnPartial() public {
+    function test_sell_FOK_revertsOnPartial() public {
         _seedLastTrade(0, 50);
 
         _mintAndApprove(ALICE, _collateral(50, 5e18));
@@ -379,7 +379,7 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         _splitForUser(TAKER, 100e18);
         vm.prank(TAKER);
         vm.expectRevert(LibMarketOrderValidator.InsufficientLiquidityForFOK.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSellV2(
+        MarketOrdersFacet(address(diamond)).placeMarketSell(
             marketId, 0, 100e18, 500, MarketOrderType.FOK
         );
     }

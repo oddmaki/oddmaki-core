@@ -4,8 +4,6 @@
 pragma solidity 0.8.28;
 
 import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
-import {LibMarketOrderService} from "../services/LibMarketOrderService.sol";
-import {LibMarketSellService} from "../services/LibMarketSellService.sol";
 import {LibMarketTakeService} from "../services/LibMarketTakeService.sol";
 import {LibMarketOrderValidator} from "../validators/LibMarketOrderValidator.sol";
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
@@ -20,11 +18,14 @@ import {MarketOrderType, MarketBuyResult, MarketSellResult, MarketTradingData} f
 /**
  * @title MarketOrdersFacet
  * @author OddMaki Protocol
- * @notice Market orders: immediate execution against resting liquidity (buy and sell side).
+ * @notice Multi-path market orders: walks both books per step, takes the
+ *         cheapest crossable path (normal vs mint for BUY; normal vs merge
+ *         for SELL), bounded by a slippage cap anchored to the on-chain mark
+ *         price at facet entry. No caller-supplied price — slippage tolerance
+ *         is the only knob.
  */
 contract MarketOrdersFacet is ReentrancyGuard {
-    /// @notice Emitted on completion of a V2 market BUY (multi-path).
-    event MarketOrderBuyV2(
+    event MarketOrderBuy(
         address indexed buyer,
         uint256 indexed marketId,
         uint256 outcomeId,
@@ -37,8 +38,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
         uint256 fillCount
     );
 
-    /// @notice Emitted on completion of a V2 market SELL (multi-path).
-    event MarketOrderSellV2(
+    event MarketOrderSell(
         address indexed seller,
         uint256 indexed marketId,
         uint256 outcomeId,
@@ -52,53 +52,11 @@ contract MarketOrdersFacet is ReentrancyGuard {
     );
 
     /**
-     * @notice [LEGACY] Place a market buy order against same-outcome SELL liquidity only.
-     *         Reverts with NoLiquidityAvailable when no same-outcome asks exist, even when
-     *         opposite-outcome bids could mint-fill the order — use {placeMarketBuyV2}
-     *         (multi-path, slippage-anchored) for that case.
-     */
-    function placeMarketOrder(
-        uint256 marketId,
-        uint256 outcomeId,
-        uint256 collateralAmount,
-        uint256 maxPriceTick,
-        MarketOrderType orderType
-    ) external nonReentrant returns (MarketBuyResult memory result) {
-        LibMarketOrderValidator.requireActiveMarket(marketId);
-        LibMarketTradingValidator.requireMarketNotPaused(marketId);
-        LibVenueValidator.requireActiveVenueForMarket(marketId);
-        LibAccessControlValidator.validateTradingAccess(msg.sender, marketId);
-        return LibMarketOrderService.placeMarketOrder(marketId, outcomeId, collateralAmount, maxPriceTick, orderType);
-    }
-
-    /**
-     * @notice [LEGACY] Place a market sell order against same-outcome BUY liquidity only.
-     *         See {placeMarketSellV2} for the multi-path (normal + merge) variant.
-     */
-    function placeMarketSell(
-        uint256 marketId,
-        uint256 outcomeId,
-        uint256 tokenAmount,
-        uint256 minPriceTick,
-        MarketOrderType orderType
-    ) external nonReentrant returns (MarketSellResult memory result) {
-        LibMarketOrderValidator.requireActiveMarket(marketId);
-        LibMarketTradingValidator.requireMarketNotPaused(marketId);
-        LibVenueValidator.requireActiveVenueForMarket(marketId);
-        LibAccessControlValidator.validateTradingAccess(msg.sender, marketId);
-        return LibMarketSellService.placeMarketSell(marketId, outcomeId, tokenAmount, minPriceTick, orderType);
-    }
-
-    // -------------------------------------------------------------------------
-    // V2: multi-path market orders (normal + mint/merge), slippage-anchored
-    // -------------------------------------------------------------------------
-
-    /**
-     * @notice Place a multi-path market BUY. Anchors slippage to the on-chain
-     *         mark price (no caller-supplied price), then walks both books
-     *         picking the cheapest crossable path (normal fill against the
-     *         same outcome's ask, or mint fill against the opposite outcome's
-     *         bid) at each step.
+     * @notice Place a market BUY. Slippage is the only price knob — the
+     *         protocol resolves the reference price on-chain via the mark
+     *         price waterfall and walks both books taking the cheapest path
+     *         per step (normal fill against same-outcome ask, or mint fill
+     *         against opposite-outcome bid).
      * @param marketId    Market to buy in.
      * @param outcomeId   Outcome to acquire (0=YES, 1=NO).
      * @param budget      Collateral the taker is willing to spend.
@@ -106,7 +64,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
      *                    Capped at {LibMarketTakeService.MAX_SLIPPAGE_BPS}.
      * @param orderType   FOK (revert on partial) or FAK (refund unspent).
      */
-    function placeMarketBuyV2(
+    function placeMarketBuy(
         uint256 marketId,
         uint256 outcomeId,
         uint256 budget,
@@ -142,7 +100,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
 
         uint256 avgPrice = take.filledQty > 0 ? (take.consumedBudget * 1e18) / take.filledQty : 0;
 
-        emit MarketOrderBuyV2(
+        emit MarketOrderBuy(
             msg.sender, marketId, outcomeId,
             take.consumedBudget, take.filledQty, avgPrice, take.remainingBudget,
             take.markTick, take.maxEffTick, take.fillCount
@@ -157,17 +115,14 @@ contract MarketOrdersFacet is ReentrancyGuard {
     }
 
     /**
-     * @notice Place a multi-path market SELL. Anchors slippage to the on-chain
-     *         mark price, walks both books picking the path with the highest
-     *         net taker tick (normal fill against same-outcome bid, or merge
-     *         fill against opposite-outcome ask) at each step.
+     * @notice Place a market SELL. Multi-path (normal + merge), slippage-anchored.
      * @param marketId    Market to sell in.
      * @param outcomeId   Outcome to sell (0=YES, 1=NO).
      * @param tokenAmount Outcome tokens the taker is offering.
      * @param slippageBps Maximum slippage below the resolved mark tick (bps).
      * @param orderType   FOK (revert on partial) or FAK (refund unsold).
      */
-    function placeMarketSellV2(
+    function placeMarketSell(
         uint256 marketId,
         uint256 outcomeId,
         uint256 tokenAmount,
@@ -204,7 +159,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
 
         uint256 avgPrice = take.soldQty > 0 ? (take.grossProceeds * 1e18) / take.soldQty : 0;
 
-        emit MarketOrderSellV2(
+        emit MarketOrderSell(
             msg.sender, marketId, outcomeId,
             take.soldQty, take.netProceeds, avgPrice, take.remainingQty,
             take.markTick, take.minEffTick, take.fillCount

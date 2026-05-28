@@ -7,8 +7,8 @@ import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 
 /**
  * @title LibMarketOrderValidator
- * @notice Market order validation logic and errors. Only reads storage — no mutations.
- *         Used by the MarketOrdersFacet and LibMarketOrderService to enforce invariants.
+ * @notice Validation logic + errors for the MarketOrdersFacet. Only reads
+ *         storage — no mutations.
  */
 library LibMarketOrderValidator {
     // ---- Constants ----
@@ -18,14 +18,10 @@ library LibMarketOrderValidator {
     // ---- Errors: market state ----
     error MarketNotActive();
 
-    // ---- Errors: input validation (buy) ----
+    // ---- Errors: input validation ----
     error ZeroCollateralAmount();
-    error InvalidMaxPrice();
     error InvalidOutcome();
-
-    // ---- Errors: input validation (sell) ----
     error ZeroTokenAmount();
-    error InvalidMinPrice();
 
     // ---- Errors: execution ----
     error InsufficientLiquidityForFOK();
@@ -38,29 +34,7 @@ library LibMarketOrderValidator {
         if (!LibMarketTradingStorage.marketIsActive(marketId)) revert MarketNotActive();
     }
 
-    /// @notice Validate market order input parameters.
-    function validateMarketOrderParams(
-        uint256 collateralAmount,
-        uint256 maxPriceTick,
-        uint256 outcomeId
-    ) internal pure {
-        if (collateralAmount == 0) revert ZeroCollateralAmount();
-        if (maxPriceTick == 0) revert InvalidMaxPrice();
-        if (outcomeId > 1) revert InvalidOutcome();
-    }
-
-    /// @notice Validate market sell order input parameters.
-    function validateMarketSellParams(
-        uint256 tokenAmount,
-        uint256 minPriceTick,
-        uint256 outcomeId
-    ) internal pure {
-        if (tokenAmount == 0) revert ZeroTokenAmount();
-        if (minPriceTick == 0) revert InvalidMinPrice();
-        if (outcomeId > 1) revert InvalidOutcome();
-    }
-
-    /// @notice Standalone outcome-id check (binary markets: 0 or 1).
+    /// @notice Binary-market outcome id check (0 or 1).
     function validateOutcomeId(uint256 outcomeId) internal pure {
         if (outcomeId > 1) revert InvalidOutcome();
     }
