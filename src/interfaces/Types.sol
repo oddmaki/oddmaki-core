@@ -279,3 +279,19 @@ struct PriceMarket {
     uint256 openPriceTime; // publishTime of the VAA used to capture the opening price (0 for strike markets)
 }
 
+// -----------------------------------------------------------------------------
+// DPM Markets (Dynamic Pari-Mutuel — Pennock 2004 §4, "DPM I")
+// -----------------------------------------------------------------------------
+
+/// @notice DPM market overlay: a self-funded pari-mutuel pool layered on a standard market.
+///         Per-outcome aggregates (collateral M, shares N, intent totals) and per-user
+///         balances live in dedicated mappings in LibDpmStorage; this struct holds only
+///         the scalar lifecycle fields. `outcomeCount == 0` means "not a DPM market".
+///         See docs/dpm-markets-plan.md and docs/dpm-pricing-math.md.
+struct DpmMarket {
+    uint256 outcomeCount; // number of outcomes (2 for binary/price; N for groups). 0 => not a DPM market.
+    uint256 openTime;     // entries allowed any time before closeTime; intent exits allowed only before openTime
+    uint256 closeTime;    // trading ends; resolution happens after this
+    bool poolInitialized; // market-level intent -> DPM transition performed (M/N seeded from intent totals)
+}
+
