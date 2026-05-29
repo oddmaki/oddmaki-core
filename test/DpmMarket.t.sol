@@ -1,0 +1,394 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025-2026 Predictable Reality, Inc.
+// Author: Carlos Revelo (Predictable Reality, Inc.)
+pragma solidity 0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {OddMaki} from "../src/OddMaki.sol";
+import {VaultFacet} from "../src/facets/VaultFacet.sol";
+import {VenueFacet} from "../src/facets/VenueFacet.sol";
+import {ProtocolFacet} from "../src/facets/ProtocolFacet.sol";
+import {MarketsFacet} from "../src/facets/MarketsFacet.sol";
+import {ResolutionFacet} from "../src/facets/ResolutionFacet.sol";
+import {DpmFacet} from "../src/facets/DpmFacet.sol";
+import {MarketOrdersFacet} from "../src/facets/MarketOrdersFacet.sol";
+import {LimitOrdersFacet} from "../src/facets/LimitOrdersFacet.sol";
+import {BatchOrdersFacet} from "../src/facets/BatchOrdersFacet.sol";
+import {MatchingFacet} from "../src/facets/MatchingFacet.sol";
+import {LibDpmValidator} from "../src/validators/LibDpmValidator.sol";
+import {DpmMarket, MarketRegistryData, Side, MarketOrderType} from "../src/interfaces/Types.sol";
+import {BatchOrderParams} from "../src/interfaces/IBatchOrders.sol";
+import {DiamondSetup} from "./helpers/DiamondSetup.sol";
+import {MockCTF} from "./helpers/MockCTF.sol";
+import {MockERC20} from "./helpers/MockERC20.sol";
+import {MockUmaOracle} from "./helpers/MockUmaOracle.sol";
+
+/**
+ * @title DPM market end-to-end tests
+ * @notice Drives the full DPM lifecycle through the diamond: intent, lazy transition, dynamic
+ *         Pennock entries, resolution + claim, no-contest / invalid refunds, and the cross-mode
+ *         guard. The default venue here has the protocol treasury unset, so trading fees are
+ *         disabled — this lets the worked example reproduce the exact $50 pool. A dedicated test
+ *         enables fees and checks the entry-fee solvency invariant separately.
+ */
+contract DpmMarketTest is Test, DiamondSetup {
+    OddMaki internal diamond;
+    MockCTF internal ctf;
+    MockERC20 internal collateral;
+    MockUmaOracle internal umaOracle;
+    uint256 internal venueId;
+
+    address internal constant CREATOR = address(0xC8EA);
+    address internal constant ASSERTER = address(0xA553E7);
+    address internal constant ALICE = address(0xA11CE);
+    address internal constant BOB = address(0xB0B);
+    address internal constant CAROL = address(0xCA801);
+    address internal constant DAVE = address(0xDA7E);
+
+    uint256 internal constant USDC = 1e6;
+    uint256 internal constant YES = 0;
+    uint256 internal constant NO = 1;
+    bytes32 internal constant UMA_IDENTIFIER = bytes32("ASSERT_TRUTH");
+
+    function setUp() public {
+        diamond = deployDiamond(address(this));
+        ctf = new MockCTF();
+        collateral = new MockERC20("Test USDC", "TUSDC", 6);
+        umaOracle = new MockUmaOracle();
+
+        VaultFacet(address(diamond)).setCtf(address(ctf));
+        ProtocolFacet(address(diamond)).setCollateralWhitelisted(address(collateral), true);
+        ProtocolFacet(address(diamond)).setUmaOracle(address(umaOracle));
+        ProtocolFacet(address(diamond)).setUmaIdentifier(UMA_IDENTIFIER);
+
+        venueId = createDefaultVenue(address(diamond));
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    function _dpm() internal view returns (DpmFacet) {
+        return DpmFacet(address(diamond));
+    }
+
+    function _createMarket(uint256 openTime, uint256 closeTime) internal returns (uint256 marketId) {
+        // Creator pays the 5 USDC venue creation fee (umaReward is 0 on the default venue).
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        string[] memory outcomes = new string[](2);
+        outcomes[0] = "Yes";
+        outcomes[1] = "No";
+        marketId = _dpm().createDpmMarket(
+            venueId, "", outcomes, address(collateral), 0, 7200, openTime, closeTime, new bytes32[](0)
+        );
+        vm.stopPrank();
+    }
+
+    function _fund(address user, uint256 amount) internal {
+        collateral.mint(user, amount);
+        vm.prank(user);
+        collateral.approve(address(diamond), amount);
+    }
+
+    function _enterIntent(address user, uint256 marketId, uint256 outcome, uint256 amount) internal {
+        _fund(user, amount);
+        vm.prank(user);
+        _dpm().enterIntent(marketId, outcome, amount);
+    }
+
+    function _enter(address user, uint256 marketId, uint256 outcome, uint256 amount) internal returns (uint256 shares) {
+        _fund(user, amount);
+        vm.prank(user);
+        shares = _dpm().enter(marketId, outcome, amount);
+    }
+
+    /// @dev Drive the shared UMA resolution path: assert -> settle -> report. `outcome` of "Yes"/"No"
+    ///      picks the winner; anything else (e.g. "Invalid") yields the [1,1] split payout.
+    function _resolve(uint256 marketId, string memory outcome) internal {
+        bytes32 qid = MarketsFacet(address(diamond)).getMarketRegistryData(marketId).questionId;
+        collateral.mint(ASSERTER, 10 * USDC);
+        vm.startPrank(ASSERTER);
+        collateral.approve(address(diamond), 10 * USDC);
+        bytes32 assertionId = ResolutionFacet(address(diamond)).assertMarketOutcome(qid, outcome);
+        vm.stopPrank();
+        ResolutionFacet(address(diamond)).settleAssertion(assertionId);
+        ResolutionFacet(address(diamond)).reportResolution(marketId, outcome);
+    }
+
+    function _pool(uint256 marketId) internal view returns (uint256) {
+        return _dpm().getMarketCollateral(marketId, YES) + _dpm().getMarketCollateral(marketId, NO);
+    }
+
+    // =========================================================================
+    // Intent phase
+    // =========================================================================
+
+    function test_intent_enterAndExit_isOneToOne() public {
+        uint256 marketId = _createMarket(block.timestamp + 1000, block.timestamp + 2000);
+
+        _enterIntent(ALICE, marketId, YES, 10 * USDC);
+        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 10 * USDC, "intent recorded");
+        assertEq(collateral.balanceOf(ALICE), 0, "collateral pulled");
+
+        vm.prank(ALICE);
+        _dpm().exitIntent(marketId, YES, 4 * USDC);
+        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 6 * USDC, "partial exit");
+        assertEq(collateral.balanceOf(ALICE), 4 * USDC, "1:1 refund");
+
+        vm.prank(ALICE);
+        _dpm().exitIntent(marketId, YES, 6 * USDC);
+        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 0, "full exit");
+        assertEq(collateral.balanceOf(ALICE), 10 * USDC, "fully refunded 1:1");
+    }
+
+    function test_intent_exitMoreThanStaked_reverts() public {
+        uint256 marketId = _createMarket(block.timestamp + 1000, block.timestamp + 2000);
+        _enterIntent(ALICE, marketId, YES, 10 * USDC);
+        vm.prank(ALICE);
+        vm.expectRevert(LibDpmValidator.InsufficientIntentStake.selector);
+        _dpm().exitIntent(marketId, YES, 11 * USDC);
+    }
+
+    function test_intent_enterAfterOpenTime_reverts() public {
+        uint256 openTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(openTime, openTime + 1000);
+        vm.warp(openTime);
+        _fund(ALICE, 1 * USDC);
+        vm.prank(ALICE);
+        vm.expectRevert(LibDpmValidator.NotIntentPhase.selector);
+        _dpm().enterIntent(marketId, YES, 1 * USDC);
+    }
+
+    // =========================================================================
+    // Intent -> DPM transition (lazy, par, fee-free)
+    // =========================================================================
+
+    function test_transition_seedsMarketAndFoldsUserAtPar() public {
+        uint256 openTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(openTime, openTime + 1000);
+
+        // Two intent backers on opposite sides before openTime.
+        _enterIntent(ALICE, marketId, YES, 30 * USDC);
+        _enterIntent(BOB, marketId, NO, 10 * USDC);
+
+        vm.warp(openTime);
+
+        // Alice's first open-phase action seeds the market (M_i = N_i = intentTotals_i) and folds her
+        // own intent at par, then applies her fresh $10 YES buy dynamically (both sides now live).
+        uint256 freshShares = _enter(ALICE, marketId, YES, 10 * USDC);
+
+        DpmMarket memory m = _dpm().getDpmMarket(marketId);
+        assertTrue(m.poolInitialized, "pool seeded");
+
+        // Market totals: M_yes = 30 (seed) + 10 (net buy); N_yes = 30 (par) + dynamic shares.
+        assertEq(_dpm().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes seed + buy");
+        assertEq(_dpm().getMarketCollateral(marketId, NO), 10 * USDC, "M_no seed");
+        assertApproxEqAbs(freshShares, 2_876_820, 50, "fresh buy priced dynamically");
+
+        // Alice transitioned at par: her 30 intent -> 30 shares + 30 paid, plus the fresh buy.
+        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 0, "Alice intent folded");
+        assertEq(_dpm().getUserPaid(marketId, ALICE, YES), 40 * USDC, "paid = 30 intent + 10 buy");
+        assertApproxEqAbs(_dpm().getUserShares(marketId, ALICE, YES), 30 * USDC + 2_876_820, 50, "30 par + fresh");
+
+        // Bob has not acted post-open: still un-transitioned (intent intact, no live shares).
+        assertEq(_dpm().getIntentStake(marketId, BOB, NO), 10 * USDC, "Bob intent pending");
+        assertEq(_dpm().getUserShares(marketId, BOB, NO), 0, "Bob not transitioned");
+
+        // Bob's first action transitions him at par (gross), fee-free, then applies his buy.
+        _enter(BOB, marketId, NO, 5 * USDC);
+        assertEq(_dpm().getIntentStake(marketId, BOB, NO), 0, "Bob transitioned");
+        assertGe(_dpm().getUserShares(marketId, BOB, NO), 10 * USDC, "10 par + buy shares");
+        assertEq(_dpm().getUserPaid(marketId, BOB, NO), 15 * USDC, "paid = 10 intent + 5 buy");
+    }
+
+    // =========================================================================
+    // Open phase — par-until-contested then dynamic
+    // =========================================================================
+
+    function test_open_parUntilContested() public {
+        uint256 marketId = _createMarket(0, block.timestamp + 1000); // immediate open, no intent
+
+        // First YES buy: NO side empty => par, 1 share per $1.
+        uint256 sYes = _enter(ALICE, marketId, YES, 10 * USDC);
+        assertEq(sYes, 10 * USDC, "par first YES");
+
+        // First NO buy: M_no == 0 => still par even though N_yes > 0.
+        uint256 sNo = _enter(CAROL, marketId, NO, 10 * USDC);
+        assertEq(sNo, 10 * USDC, "par first NO");
+
+        // Now both sides live => dynamic: a YES buy gets fewer shares than at par.
+        uint256 sDyn = _enter(BOB, marketId, YES, 10 * USDC);
+        assertLt(sDyn, 10 * USDC, "dynamic pricing engaged");
+    }
+
+    // =========================================================================
+    // Worked example (docs/dpm-pricing-math.md) — fee-free, exact pool
+    // =========================================================================
+
+    function test_workedExample_resolvesToFiftyDollars() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+
+        uint256 aliceShares = _enter(ALICE, marketId, YES, 10 * USDC); // par
+        uint256 bobShares = _enter(BOB, marketId, YES, 20 * USDC); // par
+        _enter(CAROL, marketId, NO, 10 * USDC); // par
+        uint256 daveShares = _enter(DAVE, marketId, YES, 10 * USDC); // dynamic
+
+        assertEq(aliceShares, 10 * USDC);
+        assertEq(bobShares, 20 * USDC);
+        assertApproxEqAbs(daveShares, 2_876_820, 50, "Dave ~2.8768 shares");
+
+        assertEq(_dpm().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes");
+        assertEq(_dpm().getMarketCollateral(marketId, NO), 10 * USDC, "M_no");
+        assertEq(_pool(marketId), 50 * USDC, "pool == $50");
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes");
+
+        uint256 a = _claim(ALICE, marketId);
+        uint256 b = _claim(BOB, marketId);
+        uint256 d = _claim(DAVE, marketId);
+        uint256 c = _claim(CAROL, marketId); // NO loser -> 0
+
+        assertApproxEqAbs(a, 13_04 * (USDC / 100), USDC / 100, "Alice ~ $13.04");
+        assertApproxEqAbs(b, 26_08 * (USDC / 100), USDC / 100, "Bob ~ $26.08");
+        assertApproxEqAbs(d, 10_88 * (USDC / 100), USDC / 100, "Dave ~ $10.88");
+        assertEq(c, 0, "Carol lost");
+
+        uint256 total = a + b + d + c;
+        assertLe(total, 50 * USDC, "payouts <= pool");
+        assertLe(50 * USDC - total, 3, "floor dust < 1 micro-USDC per winner");
+    }
+
+    function _claim(address user, uint256 marketId) internal returns (uint256 payout) {
+        uint256 before = collateral.balanceOf(user);
+        vm.prank(user);
+        payout = _dpm().claim(marketId);
+        assertEq(collateral.balanceOf(user) - before, payout, "payout transferred");
+    }
+
+    // =========================================================================
+    // Resolution edge cases
+    // =========================================================================
+
+    function test_noContest_winningSideEmpty_refundsAll() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+
+        // Everyone backs NO; nobody backs YES.
+        _enter(ALICE, marketId, NO, 10 * USDC);
+        _enter(BOB, marketId, NO, 5 * USDC);
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes"); // YES wins but N_yes == 0 -> no-contest
+
+        // Refund == each backer's net paid (fee-free here, so == deposit).
+        assertEq(_claim(ALICE, marketId), 10 * USDC, "Alice refunded");
+        assertEq(_claim(BOB, marketId), 5 * USDC, "Bob refunded");
+    }
+
+    function test_invalidResolution_splitPayout_refundsAll() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+
+        _enter(ALICE, marketId, YES, 10 * USDC);
+        _enter(BOB, marketId, NO, 6 * USDC);
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Invalid"); // unrecognized -> [1,1]
+
+        assertEq(_claim(ALICE, marketId), 10 * USDC, "Alice refunded on invalid");
+        assertEq(_claim(BOB, marketId), 6 * USDC, "Bob refunded on invalid");
+    }
+
+    function test_invalid_refundsUntransitionedIntentGross() public {
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createMarket(openTime, closeTime);
+
+        _enterIntent(ALICE, marketId, YES, 10 * USDC); // never transitions
+        vm.warp(closeTime);
+        _resolve(marketId, "Invalid");
+
+        // Un-transitioned intent is refunded gross (no fee was ever charged on intent).
+        assertEq(_claim(ALICE, marketId), 10 * USDC, "gross intent refunded");
+    }
+
+    function test_claim_doubleClaim_reverts() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+        _enter(ALICE, marketId, YES, 10 * USDC);
+        _enter(BOB, marketId, NO, 10 * USDC);
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes");
+
+        _claim(ALICE, marketId);
+        vm.prank(ALICE);
+        vm.expectRevert(LibDpmValidator.AlreadyClaimed.selector);
+        _dpm().claim(marketId);
+    }
+
+    function test_claim_beforeResolved_reverts() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+        _enter(ALICE, marketId, YES, 10 * USDC);
+        vm.warp(closeTime); // closed but not resolved
+        vm.prank(ALICE);
+        vm.expectRevert(LibDpmValidator.NotResolved.selector);
+        _dpm().claim(marketId);
+    }
+
+    // =========================================================================
+    // Fee path + solvency (fees enabled)
+    // =========================================================================
+
+    function test_enter_chargesFee_andStaysSolvent() public {
+        // Enable protocol fees so getMarketFees returns non-zero for new markets.
+        ProtocolFacet(address(diamond)).setProtocolTreasury(address(0xFEE5));
+        ProtocolFacet(address(diamond)).setProtocolFeeBps(20);
+
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(0, closeTime);
+
+        uint256 diamondBefore = collateral.balanceOf(address(diamond));
+        _enter(ALICE, marketId, YES, 100 * USDC);
+
+        // Net into the pool = amount - fee; fee left custody to recipients.
+        uint256 pool = _pool(marketId);
+        assertLt(pool, 100 * USDC, "fee deducted from pool");
+        // Solvency: the pool equals the collateral the diamond actually gained from this entry.
+        assertEq(collateral.balanceOf(address(diamond)) - diamondBefore, pool, "Sigma M_i == custody delta");
+    }
+
+    // =========================================================================
+    // Cross-mode guard: CLOB entry points reject a DPM market
+    // =========================================================================
+
+    function test_crossModeGuard_clobEntryPointsRejectDpm() public {
+        uint256 marketId = _createMarket(0, block.timestamp + 1000);
+        bytes4 err = LibDpmValidator.MarketIsDpm.selector;
+
+        vm.expectRevert(err);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, YES, 1 * USDC, 100, MarketOrderType.FAK);
+
+        vm.expectRevert(err);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, YES, 1 * USDC, 100, MarketOrderType.FAK);
+
+        vm.expectRevert(err);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, YES, Side.BUY, 50, 1 * USDC, 0);
+
+        vm.expectRevert(err);
+        LimitOrdersFacet(address(diamond)).expireOrders(marketId, new uint256[](0));
+
+        vm.expectRevert(err);
+        BatchOrdersFacet(address(diamond)).batchPlaceOrders(marketId, new BatchOrderParams[](0));
+
+        vm.expectRevert(err);
+        BatchOrdersFacet(address(diamond)).cancelAndReplace(marketId, new uint256[](0), new BatchOrderParams[](0));
+
+        vm.expectRevert(err);
+        MatchingFacet(address(diamond)).matchOrders(marketId, 1);
+    }
+}
