@@ -103,7 +103,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
         emit MarketOrderBuy(
             msg.sender, marketId, outcomeId,
             take.consumedBudget, take.filledQty, avgPrice, take.remainingBudget,
-            take.markTick, take.maxEffTick, take.fillCount
+            take.anchorTick, take.maxEffTick, take.fillCount
         );
 
         result = MarketBuyResult({
@@ -162,7 +162,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
         emit MarketOrderSell(
             msg.sender, marketId, outcomeId,
             take.soldQty, take.netProceeds, avgPrice, take.remainingQty,
-            take.markTick, take.minEffTick, take.fillCount
+            take.anchorTick, take.minEffTick, take.fillCount
         );
 
         result = MarketSellResult({

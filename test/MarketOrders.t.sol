@@ -464,14 +464,17 @@ contract MarketOrdersTest is Test, DiamondSetup {
     }
 
     function test_marketBuy_avgPrice_multiplelevels() public {
+        // Tier ticks chosen so both fit inside the 20% slippage cap relative
+        // to the first-step cheapest cost (anchor = ceil(50*1.0160) = 51,
+        // 20% cap = 61, ceil(56*1.0160) = 57 ≤ 61 → both fill).
         uint256 qty = 100e18;
         _placeSellOrder(BOB, 50, qty);
-        _placeSellOrder(CAROL, 70, qty);
+        _placeSellOrder(CAROL, 56, qty);
 
-        uint256 col = _buyCollateral(50, qty) + _buyCollateral(70, qty);
+        uint256 col = _buyCollateral(50, qty) + _buyCollateral(56, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        // Should be weighted average of tick 50 and tick 70 (including fees)
+        // Weighted average of tick 50 and tick 56 (including fees).
         uint256 expectedAvg = (col * 1e18) / (2 * qty);
         assertEq(r.avgPrice, expectedAvg, "weighted avg price");
     }

@@ -237,26 +237,32 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
     // BUY — slippage cap
     // =========================================================================
 
-    /// @notice Mark@50, slippage 0% → cap = 50 ticks. Asks @55 (normal cost
-    ///         ≈55.6) and Down bid at 20 (mint cost = 80 + 1.1 = 82). Both
-    ///         above cap → no fill within slippage → reverts with NoLiquidity.
-    function test_buy_slippageZero_revertsWhenNoCrossable() public {
-        _seedLastTrade(0, 50);
+    /// @notice First-step-anchor semantics: with 0% slippage the take fills
+    ///         the first (displayed best) price but cannot walk further into
+    ///         worse levels. Anchor locks at the cheapest available cost on
+    ///         iteration 0; subsequent steps must be less than or equal to
+    ///         that exact cost.
+    function test_buy_slippageZero_capsAtFirstLevel() public {
+        // Tier 1: 5 tokens at tick 50. Tier 2: 5 tokens at tick 60.
+        _splitForUser(BOB, 5e18);
+        _place(BOB, 0, Side.SELL, 50, 5e18);
 
-        _splitForUser(BOB, 100e18);
-        _place(BOB, 0, Side.SELL, 55, 100e18); // outside cap once fee bumped
-
-        _mintAndApprove(CAROL, _collateral(20, 100e18));
-        _place(CAROL, 1, Side.BUY, 20, 100e18); // mint cost way above cap
+        _splitForUser(CAROL, 5e18);
+        _place(CAROL, 0, Side.SELL, 60, 5e18);
 
         uint256 budget = 100e18;
         _mintAndApprove(TAKER, budget);
 
         vm.prank(TAKER);
-        vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketBuy(
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, budget, 0, MarketOrderType.FAK
         );
+
+        // 0% slippage anchors at step-0 cheapest cost (ceil(50 × 1.011) = 51).
+        // Tier-2 cost ceil(60 × 1.011) = 61 exceeds the cap, so the loop
+        // stops after consuming tier 1.
+        assertEq(r.tokensReceived, 5e18, "filled only the first level");
+        assertGt(r.unusedCollateral, 0, "remainder refunded - walk capped");
     }
 
     function test_buy_slippageOverMax_reverts() public {
@@ -269,14 +275,81 @@ contract MarketTakeServiceTest is Test, DiamondSetup {
         );
     }
 
-    function test_buy_undefinedMark_reverts() public {
-        // No orders, no trades → mark price undefined.
+    function test_buy_emptyBook_reverts() public {
+        // No orders, no trades → take loop finds no liquidity on any path,
+        // facet catches `filledQty == 0` and reverts NoLiquidityAvailable.
         _mintAndApprove(TAKER, 100e18);
         vm.prank(TAKER);
-        vm.expectRevert(LibMarketTakeService.NoReferencePrice.selector);
+        vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
         MarketOrdersFacet(address(diamond)).placeMarketBuy(
             marketId, 0, 100e18, 500, MarketOrderType.FAK
         );
+    }
+
+    /// @notice User-reported regression from mainnet: market has Up bids
+    ///         resting at 50 and 56, no other liquidity, no trades. Before
+    ///         the first-step-anchor refactor this reverted with
+    ///         NoReferencePrice because the mark-price waterfall was
+    ///         undefined. After the refactor the take service anchors at
+    ///         the cheapest available mint cross and the order fills.
+    function test_buy_anchorsAgainstImpliedAskWithoutMark() public {
+        _mintAndApprove(ALICE, _collateral(50, 100e18));
+        _place(ALICE, 0, Side.BUY, 50, 100e18); // Up bid at 50
+
+        _mintAndApprove(BOB, _collateral(56, 100e18));
+        _place(BOB, 0, Side.BUY, 56, 100e18);   // Up bid at 56 (best)
+
+        // Sanity: getMarkPrice for Down is undefined (no midpoint, no trade).
+        (uint256 markTick, bool markDefined) =
+            OrderBookFacet(address(diamond)).getMarkPrice(marketId, 1);
+        assertFalse(markDefined, "Down mark must be undefined");
+        assertEq(markTick, 0);
+
+        // Market BUY Down with 5% slippage. Cheapest cross is mint against
+        // Up at 56: tick cost = (100 - 56) + ceil(100 * 110/10000) = 44 + 2 = 46.
+        // Anchor = 46; cap = 46 + ceil(46 * 5%) = 46 + 3 = 49. 46 ≤ 49 → fills.
+        uint256 budget = 50e18;
+        _mintAndApprove(TAKER, budget);
+
+        vm.prank(TAKER);
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
+            marketId, 1, budget, 500, MarketOrderType.FAK
+        );
+
+        assertGt(r.tokensReceived, 0, "Down tokens minted via opposite-outcome cross");
+        assertEq(ctf.balanceOf(TAKER, positionIds[1]), r.tokensReceived);
+        assertGt(ctf.balanceOf(BOB, positionIds[0]), 0, "Up maker got Up tokens via the CTF split");
+    }
+
+    /// @notice Pins that the slippage cap is locked at step 0 — a taker
+    ///         cannot "self-justify" extra slippage by walking the book.
+    ///         The cap snapshotted on iteration 0 binds every subsequent
+    ///         step, even if the per-step cheapest cost rises monotonically.
+    function test_buy_capLockedAtStepZero() public {
+        // Three tiers: 5 tokens at 50, 5 at 60, 5 at 70.
+        _splitForUser(BOB, 5e18);
+        _place(BOB, 0, Side.SELL, 50, 5e18);
+
+        _splitForUser(CAROL, 5e18);
+        _place(CAROL, 0, Side.SELL, 60, 5e18);
+
+        address dave = address(0xDA7E);
+        _splitForUser(dave, 5e18);
+        _place(dave, 0, Side.SELL, 70, 5e18);
+
+        uint256 budget = 100e18;
+        _mintAndApprove(TAKER, budget);
+
+        // 20% slippage: anchor = ceil(50 * 1.011) = 51, cap = 51 + ceil(51*20%) = 51 + 11 = 62.
+        // Tier 1 cost = 51 ≤ 62 → fills. Tier 2 cost = ceil(60*1.011) = 61 ≤ 62 → fills.
+        // Tier 3 cost = ceil(70*1.011) = 71 > 62 → stops. Total taken: 10 of 15 available.
+        vm.prank(TAKER);
+        MarketBuyResult memory r = MarketOrdersFacet(address(diamond)).placeMarketBuy(
+            marketId, 0, budget, 2000, MarketOrderType.FAK
+        );
+
+        assertEq(r.tokensReceived, 10e18, "tier 3 blocked by step-0 cap");
+        assertGt(r.unusedCollateral, 0, "unspent budget refunded");
     }
 
     // =========================================================================
