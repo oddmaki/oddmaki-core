@@ -14,7 +14,9 @@ import {ProtocolFacet} from "../src/facets/ProtocolFacet.sol";
 import {MarketOrdersFacet} from "../src/facets/MarketOrdersFacet.sol";
 import {MarketTradingData, Side, Fill, SettlementPath, MarketOrderType, MarketBuyResult} from "../src/interfaces/Types.sol";
 import {LibMarketOrderValidator} from "../src/validators/LibMarketOrderValidator.sol";
+import {LibMarketTakeService} from "../src/services/LibMarketTakeService.sol";
 import {LibVenueValidator} from "../src/validators/LibVenueValidator.sol";
+import {OrderBookFacet} from "../src/facets/OrderBookFacet.sol";
 import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
@@ -85,13 +87,44 @@ contract MarketOrdersTest is Test, DiamondSetup {
         return LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, qty, 0);
     }
 
-    function _marketBuy(address buyer, uint256 colAmount, uint256 maxTick, MarketOrderType ot)
+    /// @dev Generous slippage used by every legacy test path — these tests
+    ///      assert fill mechanics, not slippage behaviour. Slippage edge
+    ///      cases are owned by MarketTakeService.t.sol.
+    uint256 constant LEGACY_TEST_SLIPPAGE_BPS = 2000;
+
+    function _marketBuy(address buyer, uint256 colAmount, uint256 /* maxTick */, MarketOrderType ot)
         internal
         returns (MarketBuyResult memory)
     {
         _mintAndApprove(buyer, colAmount);
         vm.prank(buyer);
-        return MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, colAmount, maxTick, ot);
+        return MarketOrdersFacet(address(diamond)).placeMarketBuy(
+            marketId, 0, colAmount, LEGACY_TEST_SLIPPAGE_BPS, ot
+        );
+    }
+
+    /// @dev Seed a defined mark price by executing a tiny matched normal fill
+    ///      at `tick`. Required because the V2 market path resolves slippage
+    ///      against the on-chain mark price; without a defined mark it reverts
+    ///      with NoReferencePrice.
+    function _seedMark(uint256 tick) internal {
+        uint256 q = 1e16; // dust — minimises volume / orderbook pollution
+        address seeder = address(0xBEEF0);
+        collateral.mint(seeder, _collateral(tick, q));
+        vm.prank(seeder);
+        collateral.approve(address(diamond), _collateral(tick, q));
+        vm.prank(seeder);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, q, 0);
+
+        collateral.mint(seeder, q);
+        vm.startPrank(seeder);
+        collateral.approve(address(diamond), q);
+        VaultFacet(address(diamond)).splitPosition(marketId, q);
+        ctf.setApprovalForAll(address(diamond), true);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, q, 0);
+        vm.stopPrank();
+
+        MatchingFacet(address(diamond)).matchOrders(marketId, 10);
     }
 
     // =========================================================================
@@ -130,6 +163,13 @@ contract MarketOrdersTest is Test, DiamondSetup {
         MarketTradingData memory td = MarketsFacet(address(diamond)).getMarketTradingData(marketId);
         positionIds[0] = td.positionIds[0];
         positionIds[1] = td.positionIds[1];
+
+        // Seed a defined mark price so V2 market-order tests can resolve
+        // slippage. Uses a dust matched trade at tick 80 (chosen so the
+        // 20%-slippage cap covers every tick exercised by these tests, which
+        // assert fill mechanics rather than slippage behaviour — slippage
+        // edge cases live in MarketTakeService.t.sol).
+        _seedMark(80);
     }
 
     // =========================================================================
@@ -208,7 +248,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.InsufficientLiquidityForFOK.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, MAX_TICK, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FOK);
     }
 
     function test_marketBuy_fak_partialFill() public {
@@ -240,7 +280,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, MAX_TICK, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     function test_marketBuy_fok_emptyBook_reverts() public {
@@ -248,27 +288,14 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, MAX_TICK, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FOK);
     }
 
-    // =========================================================================
-    // Max price constraint
-    // =========================================================================
-
-    function test_marketBuy_maxPriceTick_respected() public {
-        // Sell at tick 60 and tick 70
-        _placeSellOrder(BOB, 60, 100e18);
-        _placeSellOrder(CAROL, 70, 100e18);
-
-        // Buyer limits to tick 60 (send enough for both, but only tick 60 should fill)
-        uint256 col = _buyCollateral(60, 100e18) + _buyCollateral(70, 100e18);
-        MarketBuyResult memory r = _marketBuy(ALICE, col, 60, MarketOrderType.FAK);
-
-        // Should only fill at tick 60, not 70 (collateralSpent includes fee)
-        assertEq(r.tokensReceived, 100e18, "only filled at tick 60");
-        assertEq(r.collateralSpent, _buyCollateral(60, 100e18), "only spent for tick 60");
-        assertGt(r.unusedCollateral, 0, "remainder from tick 70 liquidity not consumed");
-    }
+    // NOTE: test_marketBuy_maxPriceTick_respected removed — caller-supplied
+    //       maxPriceTick no longer exists in V2 (replaced by slippageBps
+    //       anchored to the on-chain mark price). The equivalent behaviour —
+    //       refusing to take liquidity above the slippage cap — is tested in
+    //       MarketTakeService.t.sol::test_buy_slippageZero_revertsWhenNoCrossable.
 
     // =========================================================================
     // Fee integration
@@ -335,11 +362,12 @@ contract MarketOrdersTest is Test, DiamondSetup {
         uint256 col = _buyCollateral(tick, qty);
         _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        // Read fill from Diamond storage (same pattern as Fees.t.sol)
+        // Read fill from Diamond storage. Fill ID 1 is the setUp seed; the
+        // test's fill is ID 2.
         (uint256 id, uint256 fMarketId, uint8 path, uint256 o1, uint256 o2, uint256 fQty, uint256 priceTick,) =
-            _readFill(1);
+            _readFill(2);
 
-        assertEq(id, 1, "fill id");
+        assertEq(id, 2, "fill id");
         assertEq(fMarketId, marketId, "fill marketId");
         assertEq(path, uint8(SettlementPath.NORMAL), "fill path");
         assertEq(o1, 0, "order1Id = 0 (market order taker)");
@@ -403,22 +431,19 @@ contract MarketOrdersTest is Test, DiamondSetup {
     function test_marketBuy_zeroCollateral_reverts() public {
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.ZeroCollateralAmount.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, 0, MAX_TICK, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, 0, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
-    function test_marketBuy_zeroMaxPrice_reverts() public {
-        _mintAndApprove(ALICE, 100e18);
-        vm.prank(ALICE);
-        vm.expectRevert(LibMarketOrderValidator.InvalidMaxPrice.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, 100e18, 0, MarketOrderType.FAK);
-    }
+    // NOTE: test_marketBuy_zeroMaxPrice_reverts removed — maxPriceTick is no
+    //       longer a parameter (V2 uses slippageBps anchored to the mark price).
+    //       Slippage cap behaviour is covered by MarketTakeService.t.sol.
 
     function test_marketBuy_inactiveMarket_reverts() public {
         // Market ID 999 doesn't exist (not active)
         _mintAndApprove(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.MarketNotActive.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(999, 0, 100e18, MAX_TICK, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(999, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     // =========================================================================
@@ -439,14 +464,17 @@ contract MarketOrdersTest is Test, DiamondSetup {
     }
 
     function test_marketBuy_avgPrice_multiplelevels() public {
+        // Tier ticks chosen so both fit inside the 20% slippage cap relative
+        // to the first-step cheapest cost (anchor = ceil(50*1.0160) = 51,
+        // 20% cap = 61, ceil(56*1.0160) = 57 ≤ 61 → both fill).
         uint256 qty = 100e18;
         _placeSellOrder(BOB, 50, qty);
-        _placeSellOrder(CAROL, 70, qty);
+        _placeSellOrder(CAROL, 56, qty);
 
-        uint256 col = _buyCollateral(50, qty) + _buyCollateral(70, qty);
+        uint256 col = _buyCollateral(50, qty) + _buyCollateral(56, qty);
         MarketBuyResult memory r = _marketBuy(ALICE, col, MAX_TICK, MarketOrderType.FAK);
 
-        // Should be weighted average of tick 50 and tick 70 (including fees)
+        // Weighted average of tick 50 and tick 56 (including fees).
         uint256 expectedAvg = (col * 1e18) / (2 * qty);
         assertEq(r.avgPrice, expectedAvg, "weighted avg price");
     }
@@ -479,7 +507,7 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.InsufficientLiquidityForFOK.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, MAX_TICK, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FOK);
     }
 
     // =========================================================================
@@ -519,6 +547,6 @@ contract MarketOrdersTest is Test, DiamondSetup {
         _mintAndApprove(ALICE, col);
         vm.prank(ALICE);
         vm.expectRevert(LibVenueValidator.VenueInactive.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, MAX_TICK, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 }

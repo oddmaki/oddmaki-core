@@ -1,8 +1,8 @@
 {
   "network": "base-sepolia",
   "chainId": 84532,
-  "version": "1.5.1",
-  "timestamp": "2026-05-29T00:07:10.838Z",
+  "version": "1.5.0",
+  "timestamp": "2026-05-28T16:12:44.460Z",
   "contracts": {
     "DiamondCutFacet": "0xc94f829cd294e7ede66dd9f395b8ff9db42b43c6",
     "DiamondLoupeFacet": "0x90afb09fe2623d765c850c69d76b7cc2b4ed036e",
@@ -16,7 +16,7 @@
     "OrderBookFacet": "0x908ac6eec5afa3f860a405d8cab9b6e71eaa50a6",
     "ProtocolFacet": "0xf27cf26f0c5862db07a332e457edec1ae1109e57",
     "MarketGroupFacet": "0xbc85a4f7babb056ef7765eec925fb27c03ad4f5e",
-    "MarketOrdersFacet": "0x99aabede0e1a92cdaf4c7d5dfa8fecf71f5f8516",
+    "MarketOrdersFacet": "0x8dcc0fd5f654fe52eedbf7e2507d0ea714a0c9ab",
     "ResolutionFacet": "0xd75309f15a54d8da96d08aac73e38f4a654aeffc",
     "ERC1155ReceiverFacet": "0x8aa830cc404d52aabd596151b1f9e35637eb9e27",
     "AccessControlFacet": "0xe0a6182cfaa56a7d1034c3d644a3ad1848e0b7ea",
@@ -36,12 +36,14 @@
     "ethFaucet": "https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet",
     "explorer": "https://sepolia.basescan.org"
   },
-  "notes": "Market-order slippage anchored against first-step crossable cost",
+  "notes": "Multi-path market orders + on-chain mark price service",
   "upgrade": {
-    "previousVersion": "1.5.0",
-    "script": "20260528_MarketOrders_FirstStepAnchor.s.sol",
+    "previousVersion": "1.4.1",
+    "script": "20260527_MarketOrders_MultiPathMintMerge.s.sol",
     "changedContracts": [
-      "MarketOrdersFacet"
+      "MarketOrdersFacet",
+      "OrderBookFacet",
+      "MatchingFacet"
     ]
   }
 }

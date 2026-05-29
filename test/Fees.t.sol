@@ -75,6 +75,28 @@ contract FeesTest is Test, DiamondSetup {
         vm.stopPrank();
     }
 
+    /// @dev Seed a defined mark price via a tiny matched fill. Required for
+    ///      V2 market-order paths (NoReferencePrice otherwise).
+    function _seedMarkAt(uint256 tick) internal {
+        uint256 q = 1e16;
+        address seeder = address(0xBEEF);
+        collateral.mint(seeder, _collateral(tick, q));
+        vm.prank(seeder);
+        collateral.approve(address(diamond), _collateral(tick, q));
+        vm.prank(seeder);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, q, 0);
+
+        collateral.mint(seeder, q);
+        vm.startPrank(seeder);
+        collateral.approve(address(diamond), q);
+        VaultFacet(address(diamond)).splitPosition(marketId, q);
+        ctf.setApprovalForAll(address(diamond), true);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, q, 0);
+        vm.stopPrank();
+
+        MatchingFacet(address(diamond)).matchOrders(marketId, 10);
+    }
+
     // =========================================================================
     // Setup (with fees enabled)
     // =========================================================================
@@ -740,9 +762,11 @@ contract FeesTest is Test, DiamondSetup {
         uint256 col = _collateral(tick, qty); // 60e18
 
         _mintAndApprove(ALICE, col);
+        // Seed a defined mark so the V2 market path can resolve slippage.
+        _seedMarkAt(60);
         vm.prank(ALICE);
         // This should NOT revert — fee-aware affordableQty should prevent underflow
-        MarketOrdersFacet(address(diamond)).placeMarketOrder(marketId, 0, col, 100, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketBuy(marketId, 0, col, 2000, MarketOrderType.FAK);
 
         // ALICE should get fewer than 100 tokens (fee reduces affordable qty)
         assertGt(ctf.balanceOf(ALICE, positionIds[0]), 0, "ALICE received tokens");

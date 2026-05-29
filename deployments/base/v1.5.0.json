@@ -1,8 +1,8 @@
 {
   "network": "base",
   "chainId": 8453,
-  "version": "1.5.1",
-  "timestamp": "2026-05-29T00:10:13.205Z",
+  "version": "1.5.0",
+  "timestamp": "2026-05-28T18:31:16.830Z",
   "contracts": {
     "DiamondCutFacet": "0xa7ece197054f21ff91dee8afa26060362517e83e",
     "DiamondLoupeFacet": "0x24bd651195458934cf33348492b2ff02a6276ffc",
@@ -16,7 +16,7 @@
     "OrderBookFacet": "0x645df8814d464e57b33d7a29bb258ce07f16106c",
     "ProtocolFacet": "0x6e53bd55efe9634ec0799112878f103a8b183311",
     "MarketGroupFacet": "0xfda4ff88bbe163a85473f58b79e33c6de08182ce",
-    "MarketOrdersFacet": "0xefbfd4c17ef3a6216676aa8df729f5c5cabfb71f",
+    "MarketOrdersFacet": "0x80cbfe74ff55d8c4b33484e292086c94f067e1db",
     "ResolutionFacet": "0x644e46f3205a7f3385b16606225a90509acee7f8",
     "ERC1155ReceiverFacet": "0x16b6c6ac14ce3e856802866704d31e5dcd0ad8c6",
     "AccessControlFacet": "0x7e85fc0622ec48d568cc1d2476748df61cc8638b",
@@ -33,12 +33,14 @@
   "links": {
     "explorer": "https://basescan.org"
   },
-  "notes": "Market-order slippage anchored against first-step crossable cost",
+  "notes": "Multi-path market orders + on-chain mark price service",
   "upgrade": {
-    "previousVersion": "1.5.0",
-    "script": "20260528_MarketOrders_FirstStepAnchor.s.sol",
+    "previousVersion": "1.4.1",
+    "script": "20260527_MarketOrders_MultiPathMintMerge.s.sol",
     "changedContracts": [
-      "MarketOrdersFacet"
+      "MarketOrdersFacet",
+      "OrderBookFacet",
+      "MatchingFacet"
     ]
   }
 }

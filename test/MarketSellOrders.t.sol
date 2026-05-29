@@ -80,13 +80,40 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         return LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, qty, 0);
     }
 
-    function _marketSell(address seller, uint256 tokenAmount, uint256 minTick, MarketOrderType ot)
+    /// @dev Generous slippage for legacy fill-mechanics tests; slippage edge
+    ///      cases are owned by MarketTakeService.t.sol.
+    uint256 constant LEGACY_TEST_SLIPPAGE_BPS = 2000;
+
+    function _marketSell(address seller, uint256 tokenAmount, uint256 /* minTick */, MarketOrderType ot)
         internal
         returns (MarketSellResult memory)
     {
         _splitForUser(seller, tokenAmount);
         vm.prank(seller);
-        return MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, tokenAmount, minTick, ot);
+        return MarketOrdersFacet(address(diamond)).placeMarketSell(
+            marketId, 0, tokenAmount, LEGACY_TEST_SLIPPAGE_BPS, ot
+        );
+    }
+
+    /// @dev Seed a defined mark price (V2 paths require one).
+    function _seedMark(uint256 tick) internal {
+        uint256 q = 1e16;
+        address seeder = address(0xBEEF2);
+        collateral.mint(seeder, _collateral(tick, q));
+        vm.prank(seeder);
+        collateral.approve(address(diamond), _collateral(tick, q));
+        vm.prank(seeder);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.BUY, tick, q, 0);
+
+        collateral.mint(seeder, q);
+        vm.startPrank(seeder);
+        collateral.approve(address(diamond), q);
+        VaultFacet(address(diamond)).splitPosition(marketId, q);
+        ctf.setApprovalForAll(address(diamond), true);
+        LimitOrdersFacet(address(diamond)).placeOrder(marketId, 0, Side.SELL, tick, q, 0);
+        vm.stopPrank();
+
+        MatchingFacet(address(diamond)).matchOrders(marketId, 10);
     }
 
     // =========================================================================
@@ -125,6 +152,13 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         MarketTradingData memory td = MarketsFacet(address(diamond)).getMarketTradingData(marketId);
         positionIds[0] = td.positionIds[0];
         positionIds[1] = td.positionIds[1];
+
+        // Seed a defined mark price so V2 market-sell paths can resolve
+        // slippage. tick=20 chosen so the 20%-slippage cap on SELL (mark - 20%
+        // = 16) covers every tick exercised below it; sells need mark BELOW
+        // the tick to give the seller enough headroom against slippage.
+        // Tests assert fill mechanics, not slippage cap behaviour.
+        _seedMark(20);
     }
 
     // =========================================================================
@@ -228,7 +262,7 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         _splitForUser(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.InsufficientLiquidityForFOK.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 1, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FOK);
     }
 
     function test_marketSell_fak_partialFill() public {
@@ -247,14 +281,14 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
         _splitForUser(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 1, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     function test_marketSell_fok_emptyBook_reverts() public {
         _splitForUser(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 1, MarketOrderType.FOK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FOK);
     }
 
     function test_marketSell_fak_unsoldTokensReturned() public {
@@ -276,28 +310,14 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
     // Min price constraint
     // =========================================================================
 
-    function test_marketSell_minPriceTick_respected() public {
-        uint256 qty = 100e18;
-        // Bids at tick 70 and tick 40
-        _placeBuyOrder(BOB, 70, qty);
-        _placeBuyOrder(CAROL, 40, qty);
+    // NOTE: test_marketSell_minPriceTick_respected removed — caller-supplied
+    //       minPriceTick no longer exists in V2 (slippageBps anchored to mark).
+    //       The equivalent slippage-cap behaviour is in
+    //       MarketTakeService.t.sol (sell slippage tests).
 
-        // Seller sets minPriceTick = 50 => only tick 70 should be consumed
-        MarketSellResult memory r = _marketSell(ALICE, 2 * qty, 50, MarketOrderType.FAK);
-
-        assertEq(r.tokensSold, qty, "only filled at tick 70");
-        assertEq(r.unsoldTokens, qty, "tokens for tick 40 returned");
-    }
-
-    function test_marketSell_allBidsBelowMinPrice_reverts() public {
-        _placeBuyOrder(BOB, 30, 100e18);
-
-        // Min price above all bids
-        _splitForUser(ALICE, 100e18);
-        vm.prank(ALICE);
-        vm.expectRevert(LibMarketOrderValidator.NoLiquidityAvailable.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 50, MarketOrderType.FAK);
-    }
+    // NOTE: test_marketSell_allBidsBelowMinPrice_reverts removed — same reason.
+    //       MarketTakeService.t.sol covers "no crossable liquidity within
+    //       slippage" for the sell side.
 
     // =========================================================================
     // Fee integration
@@ -382,10 +402,11 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
 
         _marketSell(ALICE, qty, 1, MarketOrderType.FAK);
 
+        // Fill ID 1 is the setUp seed; the test's fill is ID 2.
         (uint256 id, uint256 fMarketId, uint8 path, uint256 o1, uint256 o2, uint256 fQty, uint256 priceTick,) =
-            _readFill(1);
+            _readFill(2);
 
-        assertEq(id, 1, "fill id");
+        assertEq(id, 2, "fill id");
         assertEq(fMarketId, marketId, "fill marketId");
         assertEq(path, uint8(SettlementPath.NORMAL), "fill path");
         assertEq(o1, buyOrderId, "order1Id = resting buy order");
@@ -401,15 +422,16 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
 
         _marketSell(ALICE, 2 * qty, 1, MarketOrderType.FAK);
 
+        // Seed contributes fill ID 1; the take produces fill IDs 2 and 3.
         // First fill at tick 70 (best bid)
-        (uint256 id1,,, uint256 o1_1,,, uint256 pt1,) = _readFill(1);
-        assertEq(id1, 1, "fill 1 id");
+        (uint256 id1,,, uint256 o1_1,,, uint256 pt1,) = _readFill(2);
+        assertEq(id1, 2, "fill 1 id");
         assertEq(o1_1, buyOrder1, "fill 1 order1Id");
         assertEq(pt1, 70, "fill 1 at tick 70");
 
         // Second fill at tick 60
-        (uint256 id2,,, uint256 o1_2,,, uint256 pt2,) = _readFill(2);
-        assertEq(id2, 2, "fill 2 id");
+        (uint256 id2,,, uint256 o1_2,,, uint256 pt2,) = _readFill(3);
+        assertEq(id2, 3, "fill 2 id");
         assertEq(o1_2, buyOrder2, "fill 2 order1Id");
         assertEq(pt2, 60, "fill 2 at tick 60");
     }
@@ -469,28 +491,26 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
     function test_marketSell_zeroTokenAmount_reverts() public {
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.ZeroTokenAmount.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 0, 1, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 0, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
-    function test_marketSell_zeroMinPrice_reverts() public {
-        _splitForUser(ALICE, 100e18);
-        vm.prank(ALICE);
-        vm.expectRevert(LibMarketOrderValidator.InvalidMinPrice.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 0, MarketOrderType.FAK);
-    }
+    // NOTE: test_marketSell_zeroMinPrice_reverts removed — minPriceTick is no
+    //       longer a parameter (V2 uses slippageBps anchored to the mark price).
+    //       Zero slippage means "no tolerance below mark"; slippage cap
+    //       behaviour is covered by MarketTakeService.t.sol.
 
     function test_marketSell_invalidOutcome_reverts() public {
         _splitForUser(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.InvalidOutcome.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 2, 100e18, 1, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 2, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     function test_marketSell_inactiveMarket_reverts() public {
         _splitForUser(ALICE, 100e18);
         vm.prank(ALICE);
         vm.expectRevert(LibMarketOrderValidator.MarketNotActive.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(999, 0, 100e18, 1, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(999, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     // =========================================================================
@@ -511,14 +531,17 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
     }
 
     function test_marketSell_avgPrice_multipleLevels() public {
+        // Tier ticks chosen so both clear the 20% slippage floor relative
+        // to the first-step best net tick (anchor at tier 70's net,
+        // ≈ 70*(1 - 0.0160) ≈ 68.88; 20% floor ≈ 55. Tier 60's net ≈ 59 > 55 → both fill).
         uint256 qty = 100e18;
         _placeBuyOrder(BOB, 70, qty);
-        _placeBuyOrder(CAROL, 50, qty);
+        _placeBuyOrder(CAROL, 60, qty);
 
         MarketSellResult memory r = _marketSell(ALICE, 2 * qty, 1, MarketOrderType.FAK);
 
-        // Weighted average of tick 70 and tick 50
-        uint256 totalProceeds = _collateral(70, qty) + _collateral(50, qty);
+        // Weighted average of tick 70 and tick 60.
+        uint256 totalProceeds = _collateral(70, qty) + _collateral(60, qty);
         uint256 expectedAvg = (totalProceeds * 1e18) / (2 * qty);
         assertEq(r.avgPrice, expectedAvg, "weighted avg price");
     }
@@ -539,7 +562,7 @@ contract MarketSellOrdersTest is Test, DiamondSetup {
 
         vm.prank(ALICE);
         vm.expectRevert(LibVenueValidator.VenueInactive.selector);
-        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, 1, MarketOrderType.FAK);
+        MarketOrdersFacet(address(diamond)).placeMarketSell(marketId, 0, 100e18, LEGACY_TEST_SLIPPAGE_BPS, MarketOrderType.FAK);
     }
 
     // =========================================================================
