@@ -32,6 +32,7 @@ library LibDpmValidator {
     error NotOpenPhase();         // requires openTime <= now < closeTime
     error TradingClosed();        // now >= closeTime
     error AlreadyClaimed();
+    error InsufficientIntentStake();
 
     // ---- Mode guards ----
 
@@ -102,5 +103,13 @@ library LibDpmValidator {
     /// @notice Guard against double-claim.
     function requireNotClaimed(uint256 marketId, address user) internal view {
         if (LibDpmStorage.hasClaimed(marketId, user)) revert AlreadyClaimed();
+    }
+
+    /// @notice Require the user holds at least `amount` refundable intent stake on `outcome`.
+    function requireSufficientIntentStake(uint256 marketId, address user, uint256 outcome, uint256 amount)
+        internal
+        view
+    {
+        if (LibDpmStorage.getIntentStake(marketId, user, outcome) < amount) revert InsufficientIntentStake();
     }
 }
