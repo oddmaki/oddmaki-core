@@ -8,7 +8,6 @@ import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol"
 import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
 import {LibOrderExpiryService} from "./LibOrderExpiryService.sol";
 import {LibFeeCalculatorService} from "./LibFeeCalculatorService.sol";
-import {LibMarkPriceService} from "./LibMarkPriceService.sol";
 import {LibNormalFillService} from "./LibNormalFillService.sol";
 import {LibMintFillService} from "./LibMintFillService.sol";
 import {LibMergeFillService} from "./LibMergeFillService.sol";
@@ -18,12 +17,21 @@ import {Side, MarketTradingData, MarketFees} from "../interfaces/Types.sol";
  * @title LibMarketTakeService
  * @notice Multi-path market-order execution. Walks both books simultaneously,
  *         picking the cheapest crossable path (normal-fill vs mint-fill for
- *         BUY; normal-fill vs merge-fill for SELL) at each step, bounded by a
- *         slippage cap anchored to the pre-trade mark price.
+ *         BUY; normal-fill vs merge-fill for SELL) at each step.
  *
- *         The slippage cap is computed ONCE at entry. It does not move with
- *         the price the take itself causes — anchoring it pre-trade is what
- *         makes the user's stated tolerance enforceable.
+ *         Slippage anchor is the **first-step crossing tick** — i.e. whatever
+ *         the cheapest crossable price the loop sees on iteration 0. This
+ *         matches Polymarket's "Buy Yes 80¢" semantics: the displayed best
+ *         price IS the anchor; tolerance is expressed as a percentage above
+ *         it. The anchor is snapshotted on step 0 and held constant for the
+ *         rest of the loop, so the cap is locked relative to pre-trade book
+ *         state regardless of how deep the user walks.
+ *
+ *         No mark-price dependency — a market order anchors against the book
+ *         it's about to take, not against a midpoint that may or may not be
+ *         defined. When the book has any takeable supply on the user's side
+ *         (including via mint/merge complement on the opposite outcome), the
+ *         take starts. When it doesn't, it reverts cleanly.
  */
 library LibMarketTakeService {
     /// @dev Maximum fill iterations per call (per-side step budget).
@@ -35,17 +43,18 @@ library LibMarketTakeService {
     /// @dev Hard cap on user-supplied slippage to avoid degenerate-cap abuse.
     uint256 internal constant MAX_SLIPPAGE_BPS = 2000; // 20%
 
-    error NoReferencePrice();
     error SlippageTooHigh();
-    error NoLiquidityWithinSlippage();
 
     struct TakeBuyResult {
         uint256 filledQty;
         uint256 consumedBudget;
         uint256 remainingBudget;
         uint256 fillCount;
-        uint256 markTick;       // pre-trade reference (informational)
-        uint256 maxEffTick;     // resolved slippage cap (informational)
+        /// @dev First-step anchor tick (= cheapest crossable on iteration 0).
+        ///      Informational, useful for event emission and UI debug.
+        uint256 anchorTick;
+        /// @dev Slippage cap = anchorTick + ceil(anchorTick × slippageBps / BPS).
+        uint256 maxEffTick;
     }
 
     struct TakeSellResult {
@@ -54,7 +63,7 @@ library LibMarketTakeService {
         uint256 netProceeds;
         uint256 remainingQty;
         uint256 fillCount;
-        uint256 markTick;
+        uint256 anchorTick;
         uint256 minEffTick;
     }
 
@@ -64,21 +73,60 @@ library LibMarketTakeService {
         return LibMarketOracleStorage.getStorage().byQuestionId[questionId].conditionId;
     }
 
-    /// @dev Computes the slippage cap from the resolved mark tick (BUY side).
-    ///      maxEffTick = markTick + ceil(markTick * slippageBps / BPS), clipped to fullTicks.
-    function _buyCap(uint256 markTick, uint256 slippageBps, uint256 fullTicks) private pure returns (uint256) {
+    /// @dev Upper bound for BUY: maxEffTick = anchor + ceil(anchor × slippageBps / BPS),
+    ///      clipped to fullTicks.
+    function _buyCap(uint256 anchorTick, uint256 slippageBps, uint256 fullTicks) private pure returns (uint256) {
         uint256 BPS = LibFeeCalculatorService.BPS_DENOMINATOR;
-        uint256 bump = (markTick * slippageBps + BPS - 1) / BPS; // ceil
-        uint256 cap = markTick + bump;
+        uint256 bump = (anchorTick * slippageBps + BPS - 1) / BPS; // ceil
+        uint256 cap = anchorTick + bump;
         return cap > fullTicks ? fullTicks : cap;
     }
 
-    /// @dev Lower bound for SELL: minEffTick = markTick - ceil(markTick * slippageBps / BPS),
+    /// @dev Lower bound for SELL: minEffTick = anchor - ceil(anchor × slippageBps / BPS),
     ///      floored at 1 to leave room for fees.
-    function _sellFloor(uint256 markTick, uint256 slippageBps) private pure returns (uint256) {
+    function _sellFloor(uint256 anchorTick, uint256 slippageBps) private pure returns (uint256) {
         uint256 BPS = LibFeeCalculatorService.BPS_DENOMINATOR;
-        uint256 drop = (markTick * slippageBps + BPS - 1) / BPS;
-        return markTick > drop ? markTick - drop : 1;
+        uint256 drop = (anchorTick * slippageBps + BPS - 1) / BPS;
+        return anchorTick > drop ? anchorTick - drop : 1;
+    }
+
+    /// @dev Per-step BUY cost calculator: returns the cheapest takeable cost
+    ///      in tick units (normal-fill at `sameAsk` with fee bump, or mint-fill
+    ///      against `otherBid` with fee on $1 notional). `type(uint256).max`
+    ///      means no liquidity on that path.
+    function _buyCheapestCost(
+        uint256 sameAsk,
+        uint256 otherBid,
+        uint256 fullTicks,
+        uint256 totalFeeBps
+    ) private pure returns (uint256 chosenCost, bool useNormal) {
+        uint256 BPS = LibFeeCalculatorService.BPS_DENOMINATOR;
+        uint256 normalCost = sameAsk == 0
+            ? type(uint256).max
+            : (sameAsk * (BPS + totalFeeBps) + BPS - 1) / BPS;
+        uint256 mintCost = (otherBid == 0 || otherBid >= fullTicks)
+            ? type(uint256).max
+            : (fullTicks - otherBid) + (fullTicks * totalFeeBps + BPS - 1) / BPS;
+        useNormal = normalCost <= mintCost;
+        chosenCost = useNormal ? normalCost : mintCost;
+    }
+
+    /// @dev Per-step SELL tick calculator: returns the highest net taker tick
+    ///      (normal-fill at `sameBid` minus taker fee, or merge-fill against
+    ///      `otherAsk` with fee on $1 notional). Zero means no liquidity.
+    function _sellHighestTick(
+        uint256 sameBid,
+        uint256 otherAsk,
+        uint256 fullTicks,
+        uint256 totalFeeBps
+    ) private pure returns (uint256 chosenTick, bool useNormal) {
+        uint256 BPS = LibFeeCalculatorService.BPS_DENOMINATOR;
+        uint256 normalTick = sameBid == 0 ? 0 : (sameBid * (BPS - totalFeeBps)) / BPS;
+        uint256 feeTicksOnNotional = (fullTicks * totalFeeBps) / BPS;
+        uint256 mergeGross = (otherAsk == 0 || otherAsk >= fullTicks) ? 0 : fullTicks - otherAsk;
+        uint256 mergeTick = mergeGross > feeTicksOnNotional ? mergeGross - feeTicksOnNotional : 0;
+        useNormal = normalTick >= mergeTick;
+        chosenTick = useNormal ? normalTick : mergeTick;
     }
 
     // -------------------------------------------------------------------------
@@ -101,20 +149,14 @@ library LibMarketTakeService {
     ) internal returns (TakeBuyResult memory result) {
         if (slippageBps > MAX_SLIPPAGE_BPS) revert SlippageTooHigh();
 
-        (uint256 markTick, bool defined) = LibMarkPriceService.getMarkPriceTick(marketId, outcomeId);
-        if (!defined) revert NoReferencePrice();
-
         uint256 fullTicks = 1e18 / md.tickSize;
-        uint256 maxEffTick = _buyCap(markTick, slippageBps, fullTicks);
-
-        result.markTick = markTick;
-        result.maxEffTick = maxEffTick;
         result.remainingBudget = budget;
 
         MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
         uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
         bytes32 conditionId; // lazy resolution if we need it for mint
         uint256 otherIdx = outcomeId == 0 ? 1 : 0;
+        uint256 maxEffTick;
 
         for (uint256 step = 0; step < MAX_TAKE_STEPS && result.remainingBudget > 0; step++) {
             uint256 sameAsk = LibOrderBookStorage.getTopOfBook(marketId, outcomeId, Side.SELL);
@@ -122,23 +164,21 @@ library LibMarketTakeService {
 
             if (sameAsk == 0 && otherBid == 0) break;
 
-            // Effective per-token cost in tick units (rounded up).
-            uint256 normalCost = sameAsk == 0
-                ? type(uint256).max
-                : (sameAsk * (LibFeeCalculatorService.BPS_DENOMINATOR + totalFeeBps)
-                    + LibFeeCalculatorService.BPS_DENOMINATOR - 1)
-                  / LibFeeCalculatorService.BPS_DENOMINATOR;
+            (uint256 chosenCost, bool useNormal) =
+                _buyCheapestCost(sameAsk, otherBid, fullTicks, totalFeeBps);
 
-            // Mint taker cost in tick units = (fullTicks - otherBid) + ceil(fullTicks * feeBps / BPS).
-            uint256 mintCost = (otherBid == 0 || otherBid >= fullTicks)
-                ? type(uint256).max
-                : (fullTicks - otherBid)
-                  + (fullTicks * totalFeeBps + LibFeeCalculatorService.BPS_DENOMINATOR - 1)
-                    / LibFeeCalculatorService.BPS_DENOMINATOR;
+            if (chosenCost == type(uint256).max) break;
 
-            bool useNormal = normalCost <= mintCost;
-            uint256 chosenCost = useNormal ? normalCost : mintCost;
-            if (chosenCost == type(uint256).max || chosenCost > maxEffTick) break;
+            // First step locks the anchor + slippage cap against the displayed
+            // best price. Subsequent steps re-check the cap against the loop's
+            // initial snapshot — the user cannot move the cap by self-filling.
+            if (step == 0) {
+                result.anchorTick = chosenCost;
+                maxEffTick = _buyCap(chosenCost, slippageBps, fullTicks);
+                result.maxEffTick = maxEffTick;
+            }
+
+            if (chosenCost > maxEffTick) break;
 
             if (useNormal) {
                 if (!_takeNormalBuyStep(marketId, outcomeId, sameAsk, taker, fees, md, result)) break;
@@ -261,20 +301,14 @@ library LibMarketTakeService {
     ) internal returns (TakeSellResult memory result) {
         if (slippageBps > MAX_SLIPPAGE_BPS) revert SlippageTooHigh();
 
-        (uint256 markTick, bool defined) = LibMarkPriceService.getMarkPriceTick(marketId, outcomeId);
-        if (!defined) revert NoReferencePrice();
-
         uint256 fullTicks = 1e18 / md.tickSize;
-        uint256 minEffTick = _sellFloor(markTick, slippageBps);
-
-        result.markTick = markTick;
-        result.minEffTick = minEffTick;
         result.remainingQty = sharesIn;
 
         MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
         uint256 totalFeeBps = LibFeeCalculatorService.getTotalFeeBps(fees);
         bytes32 conditionId;
         uint256 otherIdx = outcomeId == 0 ? 1 : 0;
+        uint256 minEffTick;
 
         for (uint256 step = 0; step < MAX_TAKE_STEPS && result.remainingQty > 0; step++) {
             uint256 sameBid = LibOrderBookStorage.getTopOfBook(marketId, outcomeId, Side.BUY);
@@ -282,20 +316,20 @@ library LibMarketTakeService {
 
             if (sameBid == 0 && otherAsk == 0) break;
 
-            // Net taker tick per path (higher = better payout for taker).
-            uint256 normalTick = sameBid == 0
-                ? 0
-                : (sameBid * (LibFeeCalculatorService.BPS_DENOMINATOR - totalFeeBps))
-                  / LibFeeCalculatorService.BPS_DENOMINATOR;
+            (uint256 chosenTick, bool useNormal) =
+                _sellHighestTick(sameBid, otherAsk, fullTicks, totalFeeBps);
 
-            uint256 feeTicksOnNotional = (fullTicks * totalFeeBps)
-                / LibFeeCalculatorService.BPS_DENOMINATOR;
-            uint256 mergeGross = (otherAsk == 0 || otherAsk >= fullTicks) ? 0 : fullTicks - otherAsk;
-            uint256 mergeTick = mergeGross > feeTicksOnNotional ? mergeGross - feeTicksOnNotional : 0;
+            if (chosenTick == 0) break;
 
-            bool useNormal = normalTick >= mergeTick;
-            uint256 chosenTick = useNormal ? normalTick : mergeTick;
-            if (chosenTick == 0 || chosenTick < minEffTick) break;
+            // First step locks the anchor + slippage floor against the displayed
+            // best price the user could sell at right now.
+            if (step == 0) {
+                result.anchorTick = chosenTick;
+                minEffTick = _sellFloor(chosenTick, slippageBps);
+                result.minEffTick = minEffTick;
+            }
+
+            if (chosenTick < minEffTick) break;
 
             if (useNormal) {
                 if (!_takeNormalSellStep(marketId, outcomeId, sameBid, taker, fees, md, result)) break;
