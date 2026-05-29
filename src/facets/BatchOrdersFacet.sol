@@ -8,6 +8,7 @@ import {LibOrderCancellationService} from "../services/LibOrderCancellationServi
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
+import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {BatchOrderParams} from "../interfaces/IBatchOrders.sol";
 import {Side} from "../interfaces/Types.sol";
@@ -37,6 +38,7 @@ contract BatchOrdersFacet is ReentrancyGuard {
         uint256 marketId,
         BatchOrderParams[] calldata orders
     ) external nonReentrant returns (uint256[] memory orderIds) {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         uint256 len = orders.length;
         if (len == 0) revert EmptyBatch();
         if (len > MAX_BATCH_PLACE) revert BatchTooLarge();
@@ -80,6 +82,7 @@ contract BatchOrdersFacet is ReentrancyGuard {
         uint256[] calldata cancelOrderIds,
         BatchOrderParams[] calldata newOrders
     ) external nonReentrant returns (uint256 cancelledCount, uint256[] memory newOrderIds) {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         if (cancelOrderIds.length > MAX_BATCH_CANCEL) revert BatchTooLarge();
         if (newOrders.length > MAX_BATCH_PLACE) revert BatchTooLarge();
         if (cancelOrderIds.length == 0 && newOrders.length == 0) revert EmptyBatch();
