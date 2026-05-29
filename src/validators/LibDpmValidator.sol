@@ -4,7 +4,8 @@
 pragma solidity 0.8.28;
 
 import {LibDpmStorage} from "../storage/LibDpmStorage.sol";
-import {DpmMarket} from "../interfaces/Types.sol";
+import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
+import {DpmMarket, MarketStatus} from "../interfaces/Types.sol";
 
 /**
  * @title LibDpmValidator
@@ -33,6 +34,7 @@ library LibDpmValidator {
     error TradingClosed();        // now >= closeTime
     error AlreadyClaimed();
     error InsufficientIntentStake();
+    error NotResolved();          // claim requires the underlying market resolved by the oracle
 
     // ---- Mode guards ----
 
@@ -111,5 +113,14 @@ library LibDpmValidator {
         view
     {
         if (LibDpmStorage.getIntentStake(marketId, user, outcome) < amount) revert InsufficientIntentStake();
+    }
+
+    /// @notice Require the underlying market has been resolved by the oracle (claim precondition).
+    ///         DPM has no resolve function of its own; it reads the shared registry status that the
+    ///         UMA/Pyth/group resolution paths set.
+    function requireResolved(uint256 marketId) internal view {
+        if (LibMarketRegistryStorage.getMarketRegistryData(marketId).status != MarketStatus.Resolved) {
+            revert NotResolved();
+        }
     }
 }
