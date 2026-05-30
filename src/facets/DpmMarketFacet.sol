@@ -82,6 +82,7 @@ contract DpmMarketFacet is ReentrancyGuard {
         LibVenueValidator.requireActiveVenue(venueId);
         LibAccessControlValidator.validateCreationAccess(msg.sender, venueId);
         LibProtocolValidator.requireWhitelistedCollateral(collateralToken);
+        LibDpmValidator.requireValidOutcomeCount(outcomes.length); // 2..MAX_OUTCOMES (categorical N-way)
 
         // Resolve the lifecycle window (openTime == 0 is the "immediate" sentinel).
         LibDpmValidator.requireValidOpenTime(openTime);
@@ -95,7 +96,9 @@ contract DpmMarketFacet is ReentrancyGuard {
             TransferHelper._transferFromErc20(collateralToken, msg.sender, address(this), reward);
         }
 
-        // Base market: standalone (groupId 0), Active, nominal tick. Outcomes length (2) enforced here.
+        // Base market: standalone (groupId 0), Active, nominal tick. The condition is sized to
+        // outcomes.length (N slots); vault/outcome-token registration is skipped for N > 2 (DPM
+        // trades no tokens). UMA resolves by asserting one of the N outcome strings.
         marketId = LibMarketCreationService.createMarket(
             msg.sender,
             venueId,
@@ -110,10 +113,9 @@ contract DpmMarketFacet is ReentrancyGuard {
             tags
         );
 
-        // DPM overlay: binary => outcomeCount 2.
-        LibDpmService.initPool(marketId, 2, effectiveOpenTime, closeTime);
+        LibDpmService.initPool(marketId, outcomes.length, effectiveOpenTime, closeTime);
 
-        emit DpmMarketCreated(marketId, venueId, msg.sender, 2, effectiveOpenTime, closeTime);
+        emit DpmMarketCreated(marketId, venueId, msg.sender, outcomes.length, effectiveOpenTime, closeTime);
     }
 
     /**
@@ -150,6 +152,10 @@ contract DpmMarketFacet is ReentrancyGuard {
         LibVenueValidator.requireActiveVenue(venueId);
         LibAccessControlValidator.validateCreationAccess(msg.sender, venueId);
         LibProtocolValidator.requireWhitelistedCollateral(collateralToken);
+
+        // Price markets are inherently binary (above/below; up/down) and resolve to a 2-slot payout,
+        // so enforce exactly 2 outcomes (createMarket now permits N, which only DPM-UMA uses).
+        if (outcomes.length != 2) revert LibMarketCreationService.InvalidOutcomesLength();
 
         // Pyth + DPM lifecycle validation. openTime == 0 is the "immediate" sentinel (no intent phase).
         LibPriceMarketValidator.requirePythConfigured();

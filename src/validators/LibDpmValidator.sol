@@ -18,8 +18,11 @@ import {DpmMarket, MarketStatus} from "../interfaces/Types.sol";
  *           - Closed:       now >= closeTime               (resolution, then claim)
  */
 library LibDpmValidator {
-    // Minimum outcomes for a DPM market (binary). Groups may have more.
+    // Outcome bounds for a DPM market. Binary is the floor; the ceiling bounds the O(N) pricing /
+    // seed / claim loops (each enter/claim sums over all other outcomes). 64 is well under the CTF
+    // protocol limit of 256 and keeps per-op gas predictable; raise it only with the gas cost in mind.
     uint256 internal constant MIN_OUTCOMES = 2;
+    uint256 internal constant MAX_OUTCOMES = 64;
 
     error NotDpmMarket();
     error AlreadyDpmMarket();
@@ -58,7 +61,7 @@ library LibDpmValidator {
     // ---- Creation-time input guards ----
 
     function requireValidOutcomeCount(uint256 outcomeCount) internal pure {
-        if (outcomeCount < MIN_OUTCOMES) revert InvalidOutcomeCount();
+        if (outcomeCount < MIN_OUTCOMES || outcomeCount > MAX_OUTCOMES) revert InvalidOutcomeCount();
     }
 
     /// @notice Validate the user-supplied `openTime`. `0` is the immediate sentinel — the facet

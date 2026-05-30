@@ -580,6 +580,101 @@ contract DpmMarketTest is Test, DiamondSetup {
     }
 
     // =========================================================================
+    // N-outcome (categorical) DPM markets
+    // =========================================================================
+
+    function _createCategorical(string[] memory outcomes, uint256 openTime, uint256 closeTime)
+        internal
+        returns (uint256 marketId)
+    {
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        marketId = _market().createDpmMarket(
+            venueId, "", outcomes, address(collateral), 0, 7200, openTime, closeTime, new bytes32[](0)
+        );
+        vm.stopPrank();
+    }
+
+    function test_nOutcome_election_resolveAndClaim() public {
+        uint256 closeTime = block.timestamp + 1000;
+        string[] memory outcomes = new string[](3);
+        outcomes[0] = "Alice";
+        outcomes[1] = "Bob";
+        outcomes[2] = "Carol";
+        uint256 marketId = _createCategorical(outcomes, 0, closeTime); // immediate open, no intent
+
+        assertEq(_market().getDpmMarket(marketId).outcomeCount, 3, "3-way market");
+
+        // One backer per candidate, all par (each is first on its outcome).
+        _enter(ALICE, marketId, 0, 10 * USDC);
+        _enter(BOB, marketId, 1, 10 * USDC);
+        _enter(CAROL, marketId, 2, 10 * USDC);
+        assertEq(_pool(marketId) + _market().getMarketCollateral(marketId, 2), 30 * USDC, "pool == $30");
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Bob"); // UMA: assert "Bob" -> settle true -> report (3-vector [0,1,0])
+
+        // Bob wins the whole losers' pool (sole outcome-1 backer): 10 paid + (20/10)*10 = $30 = pool.
+        assertEq(_claim(BOB, marketId), 30 * USDC, "Bob wins the full pool");
+        assertEq(_claim(ALICE, marketId), 0, "Alice (lost) gets 0");
+        assertEq(_claim(CAROL, marketId), 0, "Carol (lost) gets 0");
+    }
+
+    function test_nOutcome_proRataAmongWinners() public {
+        uint256 closeTime = block.timestamp + 1000;
+        string[] memory outcomes = new string[](3);
+        outcomes[0] = "Alice";
+        outcomes[1] = "Bob";
+        outcomes[2] = "Carol";
+        uint256 marketId = _createCategorical(outcomes, 0, closeTime);
+
+        // Two backers on Bob (the winner), one on each loser. All par.
+        _enter(ALICE, marketId, 1, 30 * USDC); // Bob backer
+        _enter(BOB, marketId, 1, 10 * USDC); // Bob backer
+        _enter(CAROL, marketId, 0, 20 * USDC); // Alice backer (loses)
+        _enter(DAVE, marketId, 2, 20 * USDC); // Carol backer (loses)
+        // pool = 80; M_bob = 40; losers' pool M_other = 40; N_bob = 40 (par).
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Bob");
+
+        // Each Bob share redeems paid + (M_other / N_bob) = paid + (40/40)*shares = 2x stake.
+        assertEq(_claim(ALICE, marketId), 60 * USDC, "Alice (Bob, 30) -> 60");
+        assertEq(_claim(BOB, marketId), 20 * USDC, "Bob (Bob, 10) -> 20");
+        assertEq(_claim(CAROL, marketId), 0, "Carol backer lost");
+        assertEq(_claim(DAVE, marketId), 0, "Dave backer lost");
+    }
+
+    function test_nOutcome_outcomeCountBounds_revert() public {
+        string[] memory one = new string[](1);
+        one[0] = "Solo";
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        vm.expectRevert(LibDpmValidator.InvalidOutcomeCount.selector);
+        _market().createDpmMarket(
+            venueId, "", one, address(collateral), 0, 7200, 0, block.timestamp + 1000, new bytes32[](0)
+        );
+        vm.stopPrank();
+    }
+
+    function test_priceMarket_rejectsNonBinary() public {
+        string[] memory three = new string[](3);
+        three[0] = "Up";
+        three[1] = "Flat";
+        three[2] = "Down";
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        vm.expectRevert(); // price markets are binary; createMarket.InvalidOutcomesLength
+        _market().createDpmPriceMarket(
+            venueId, ETH_USD_FEED, STRIKE_PRICE, 0, block.timestamp + 1000, three, address(collateral), "q:t", 0, new bytes32[](0), 0
+        );
+        vm.stopPrank();
+    }
+
+    // =========================================================================
     // Indexer events
     // =========================================================================
 
