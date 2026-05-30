@@ -779,6 +779,18 @@ contract DpmMarketTest is Test, DiamondSetup {
         assertEq(_claim(CAROL, marketId), 5 * USDC, "Carol refunded");
     }
 
+    function test_enter_zeroShares_reverts() public {
+        // Deep, imbalanced book: a $1 buy on a side holding $1,000,000 floors to 0 shares.
+        uint256 marketId = _createMarket(0, block.timestamp + 1000);
+        _enter(ALICE, marketId, YES, 1_000_000 * USDC); // huge YES (par)
+        _enter(BOB, marketId, NO, 1 * USDC); // tiny NO -> both sides live (dynamic)
+
+        _fund(CAROL, 1 * USDC);
+        vm.prank(CAROL);
+        vm.expectRevert(LibDpmValidator.ZeroShares.selector); // would silently mint 0 pre-fix
+        _trade().enter(marketId, YES, 1 * USDC, 0);
+    }
+
     function test_enter_slippageGuard() public {
         uint256 marketId = _createMarket(0, block.timestamp + 1000);
         _fund(ALICE, 10 * USDC);
@@ -976,5 +988,25 @@ contract DpmMarketTest is Test, DiamondSetup {
 
         vm.expectRevert(err);
         MatchingFacet(address(diamond)).matchOrders(marketId, 1);
+    }
+
+    // =========================================================================
+    // Cross-mode guard on the CTF token surface (Vault split/merge).
+    // A binary DPM market has a prepared CTF condition + positionIds (createMarket
+    // Step 8 runs for length == 2), but DPM holds no outcome tokens and trades from
+    // its own pool — so split/merge must be rejected like the orderbook entry points.
+    // =========================================================================
+
+    function test_crossModeGuard_vaultSplitMergeRejectDpm() public {
+        uint256 marketId = _createMarket(0, block.timestamp + 1000);
+        _fund(DAVE, 50 * USDC);
+
+        vm.prank(DAVE);
+        vm.expectRevert(LibDpmValidator.MarketIsDpm.selector);
+        VaultFacet(address(diamond)).splitPosition(marketId, 50 * USDC);
+
+        vm.prank(DAVE);
+        vm.expectRevert(LibDpmValidator.MarketIsDpm.selector);
+        VaultFacet(address(diamond)).mergePositions(marketId, 50 * USDC);
     }
 }

@@ -41,6 +41,7 @@ library LibDpmValidator {
     error EmptyOutcomeLabel();    // addDpmOutcome: label must be non-empty
     error DuplicateOutcome();     // addDpmOutcome: label already present (would alias on resolution)
     error SlippageExceeded();             // enter: shares minted < caller's minSharesOut
+    error ZeroShares();                   // enter: amount too small / book too deep to mint any shares
     error PriceMarketOutcomesAreFixed();  // addDpmOutcome: price markets are binary (2-slot payout)
     error AssertionInFlight();            // addDpmOutcome: an outcome assertion is already open
 

@@ -15,6 +15,7 @@ import {LimitOrdersFacet} from "../../src/facets/LimitOrdersFacet.sol";
 import {BatchOrdersFacet} from "../../src/facets/BatchOrdersFacet.sol";
 import {MatchingFacet} from "../../src/facets/MatchingFacet.sol";
 import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
+import {VaultFacet} from "../../src/facets/VaultFacet.sol";
 
 /**
  * @title 20260530 — DPM market mode (Pennock 2004 §4): binary UMA + Pyth, categorical N-outcome
@@ -40,6 +41,8 @@ import {PythResolutionFacet} from "../../src/facets/PythResolutionFacet.sol";
  *   REPLACE MatchingFacet           — cross-mode guard.
  *   REPLACE PythResolutionFacet     — PriceMarketCreatedPyth now emitted by LibPriceMarketService
  *                                     (shared by the CLOB + DPM price paths); selectors unchanged.
+ *   REPLACE VaultFacet              — cross-mode guard on splitPosition/mergePositions (DPM markets
+ *                                     hold no CTF outcome tokens); selectors unchanged.
  *   All REPLACE selectors are unchanged — only the bytecode behind them is new (internal libraries
  *   are inlined at compile time, so each changed library ships inside the facets that call it).
  *
@@ -98,9 +101,10 @@ contract UpgradeDpmMarketMode is Script {
         BatchOrdersFacet batchOrders = new BatchOrdersFacet();
         MatchingFacet matching = new MatchingFacet();
         PythResolutionFacet pyth = new PythResolutionFacet();
+        VaultFacet vault = new VaultFacet();
 
-        // 2. Build the cut: 2 Add + 6 Replace, applied atomically.
-        IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](8);
+        // 2. Build the cut: 2 Add + 7 Replace, applied atomically.
+        IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](9);
         cuts[0] = _cut(address(dpmMarket), IDiamond.FacetCutAction.Add, _dpmMarketSelectors());
         cuts[1] = _cut(address(dpmTrading), IDiamond.FacetCutAction.Add, _dpmTradingSelectors());
         cuts[2] = _cut(address(markets), IDiamond.FacetCutAction.Replace, _marketsSelectors());
@@ -109,6 +113,7 @@ contract UpgradeDpmMarketMode is Script {
         cuts[5] = _cut(address(batchOrders), IDiamond.FacetCutAction.Replace, _batchOrdersSelectors());
         cuts[6] = _cut(address(matching), IDiamond.FacetCutAction.Replace, _matchingSelectors());
         cuts[7] = _cut(address(pyth), IDiamond.FacetCutAction.Replace, _pythSelectors());
+        cuts[8] = _cut(address(vault), IDiamond.FacetCutAction.Replace, _vaultSelectors());
 
         if (safeMode) {
             vm.stopBroadcast();
@@ -120,7 +125,7 @@ contract UpgradeDpmMarketMode is Script {
             console.log("Value:  0");
             console.log("Data:");
             console.logBytes(cutCalldata);
-            _logAddresses(dpmMarket, dpmTrading, markets, marketOrders, limitOrders, batchOrders, matching, pyth);
+            _logAddresses(dpmMarket, dpmTrading, markets, marketOrders, limitOrders, batchOrders, matching, pyth, vault);
             return;
         }
 
@@ -128,7 +133,7 @@ contract UpgradeDpmMarketMode is Script {
         vm.stopBroadcast();
 
         console.log("Diamond cut executed against:", diamond);
-        _logAddresses(dpmMarket, dpmTrading, markets, marketOrders, limitOrders, batchOrders, matching, pyth);
+        _logAddresses(dpmMarket, dpmTrading, markets, marketOrders, limitOrders, batchOrders, matching, pyth, vault);
     }
 
     // ---- cut helper ----
@@ -216,6 +221,15 @@ contract UpgradeDpmMarketMode is Script {
         s[4] = PythResolutionFacet.markPriceMarketInvalid.selector;
     }
 
+    function _vaultSelectors() private pure returns (bytes4[] memory s) {
+        s = new bytes4[](5);
+        s[0] = VaultFacet.getVault.selector;
+        s[1] = VaultFacet.getCtfAddress.selector;
+        s[2] = VaultFacet.setCtf.selector;
+        s[3] = VaultFacet.splitPosition.selector;
+        s[4] = VaultFacet.mergePositions.selector;
+    }
+
     function _logAddresses(
         DpmMarketFacet a,
         DpmTradingFacet b,
@@ -224,7 +238,8 @@ contract UpgradeDpmMarketMode is Script {
         LimitOrdersFacet e,
         BatchOrdersFacet f,
         MatchingFacet g,
-        PythResolutionFacet h
+        PythResolutionFacet h,
+        VaultFacet i
     ) private pure {
         console.log("DpmMarketFacet (Add):      ", address(a));
         console.log("DpmTradingFacet (Add):     ", address(b));
@@ -234,5 +249,6 @@ contract UpgradeDpmMarketMode is Script {
         console.log("BatchOrdersFacet (Replace):", address(f));
         console.log("MatchingFacet (Replace):   ", address(g));
         console.log("PythResolutionFacet (Replace):", address(h));
+        console.log("VaultFacet (Replace):      ", address(i));
     }
 }

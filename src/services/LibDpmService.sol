@@ -9,6 +9,7 @@ import {LibDpmAggregate} from "../aggregates/LibDpmAggregate.sol";
 import {LibDpmPricingService} from "./LibDpmPricingService.sol";
 import {LibDpmFeeService} from "./LibDpmFeeService.sol";
 import {LibDpmResolutionService} from "./LibDpmResolutionService.sol";
+import {mulDiv} from "@prb/math/Common.sol";
 
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibVaultCollateralService} from "./LibVaultCollateralService.sol";
@@ -138,6 +139,11 @@ library LibDpmService {
         uint256 nOther = LibDpmStorage.getOtherShares(marketId, outcome);
         sharesOut = LibDpmPricingService.sharesForCollateral(mI, nOther, netAmount);
 
+        // Never let a non-zero deposit mint 0 shares: on a deep/imbalanced book the floored Pennock
+        // inverse can round to 0, which would silently donate the deposit to other holders. Revert so
+        // the caller fails cleanly (and can re-try with a larger amount) instead of burning funds.
+        if (sharesOut == 0) revert LibDpmValidator.ZeroShares();
+
         // Slippage guard: the dynamic price moves with flow, so a buy can mint fewer shares than
         // quoted if others enter first (or sandwich the tx). Caller passes minSharesOut (0 to opt out).
         if (sharesOut < minSharesOut) revert LibDpmValidator.SlippageExceeded();
@@ -213,7 +219,9 @@ library LibDpmService {
                 uint256 userPaid = LibDpmStorage.getUserPaid(marketId, user, winner);
 
                 // DPM I: refund of price paid + pro-rata slice of the losers' pool (slice floored).
-                payout = userPaid + (mOther * userShares) / nW;
+                // 512-bit mulDiv so an 18-decimal collateral with a huge pool can't overflow the
+                // intermediate product and lock the payout.
+                payout = userPaid + mulDiv(mOther, userShares, nW);
             }
         }
 
