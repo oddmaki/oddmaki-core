@@ -903,6 +903,52 @@ contract DpmMarketTest is Test, DiamondSetup {
     }
 
     // =========================================================================
+    // Solvency on void paths WITH fees + intent (regression for the seed-vs-gross-refund bug)
+    // =========================================================================
+
+    function test_intentFee_noContest_refundsNet_andStaysSolvent() public {
+        _enableFees(); // 130 bps
+        uint256 openTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(openTime, openTime + 1000);
+        _enterIntent(ALICE, marketId, NO, 100 * USDC);
+        _enterIntent(BOB, marketId, NO, 100 * USDC);
+        // Nobody backs YES.
+        vm.warp(openTime + 1000);
+        _resolve(marketId, "Yes"); // YES wins but N_yes == 0 -> no-contest. Alice's claim seeds the pool.
+
+        // Seed charges floor(200·130bps) = 2.6 USDC; each backer is refunded the NET 98.7. The
+        // pre-fix code refunded GROSS 100 each and Bob's claim reverted (custody 197.4 < 200).
+        uint256 a = _claim(ALICE, marketId);
+        uint256 b = _claim(BOB, marketId); // must NOT revert
+        assertEq(a, 98_700_000, "Alice net refund");
+        assertEq(b, 98_700_000, "Bob net refund");
+        assertLe(a + b, 200 * USDC, "refunds never exceed deposits");
+    }
+
+    function test_intentFee_seededThenInvalid_refundsNet_andStaysSolvent() public {
+        _enableFees();
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createMarket(openTime, closeTime);
+        _enterIntent(ALICE, marketId, YES, 100 * USDC); // pure intent, never transitions
+        _enterIntent(BOB, marketId, NO, 100 * USDC); // pure intent, never transitions
+
+        vm.warp(openTime);
+        _enter(CAROL, marketId, YES, 50 * USDC); // open-phase enter SEEDS the pool (charges the intent fee)
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Invalid"); // [1,1] -> refund all
+
+        uint256 a = _claim(ALICE, marketId); // un-transitioned intent on a SEEDED market -> NET refund
+        uint256 b = _claim(BOB, marketId);
+        uint256 c = _claim(CAROL, marketId); // dynamic entrant -> net userPaid
+        assertEq(a, 98_700_000, "Alice net intent refund");
+        assertEq(b, 98_700_000, "Bob net intent refund");
+        assertEq(c, 49_350_000, "Carol net dynamic refund");
+        assertLe(a + b + c, 250 * USDC, "seeded-invalid refunds never exceed deposits");
+    }
+
+    // =========================================================================
     // Cross-mode guard: CLOB entry points reject a DPM market
     // =========================================================================
 

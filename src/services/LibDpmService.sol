@@ -183,7 +183,11 @@ library LibDpmService {
         (bool hasWinner, uint256 winner) = LibDpmResolutionService.winningOutcome(marketId, oc);
 
         if (!hasWinner) {
-            // Invalid / split ([1,1] or any non-singleton payout): refund every position.
+            // Invalid / split ([1,1] or any non-singleton payout): refund every position. If the pool
+            // was already seeded (an open-phase enter charged the intent fee, which left custody),
+            // fold the claimer's intent into their NET basis first so the refund matches custody;
+            // an unseeded market never paid a fee, so it refunds the gross intent stake.
+            if (m.poolInitialized) _transitionIfNeeded(marketId, user);
             payout = _refundAll(marketId, user, oc);
         } else {
             // Seed (idempotent per market) so the no-contest check sees intent-backed shares. This
@@ -192,7 +196,10 @@ library LibDpmService {
             _seedIfNeeded(marketId, _collateralToken(marketId));
 
             if (LibDpmStorage.getShares(marketId, winner) == 0) {
-                // No-contest: nobody backed the winning outcome -> void, refund all.
+                // No-contest: nobody backed the winning outcome -> void, refund all. The seed above
+                // charged the intent fee, so net the claimer's intent (transition) before refunding —
+                // refunding gross here would over-pay by the fee that already left custody.
+                _transitionIfNeeded(marketId, user);
                 payout = _refundAll(marketId, user, oc);
             } else {
                 // Fold the claimer's intent into their live position (pure allocation) so a
