@@ -362,6 +362,117 @@ contract DpmMarketTest is Test, DiamondSetup {
         assertEq(collateral.balanceOf(address(diamond)) - diamondBefore, pool, "Sigma M_i == custody delta");
     }
 
+    /// @dev Enable fees: protocol 20bps + venue 100bps + operator 10bps = 130bps total.
+    address internal constant PROTOCOL_TREASURY = address(0xFEE5);
+
+    function _enableFees() internal {
+        ProtocolFacet(address(diamond)).setProtocolTreasury(PROTOCOL_TREASURY);
+        ProtocolFacet(address(diamond)).setProtocolFeeBps(20);
+    }
+
+    function test_intentFee_chargedAtSeed_winnerPaysAndOperatorGoesToProtocol() public {
+        _enableFees(); // 130 bps total
+
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createMarket(openTime, closeTime);
+
+        // Pure intent on both sides; nobody trades during open.
+        _enterIntent(ALICE, marketId, YES, 100 * USDC);
+        _enterIntent(BOB, marketId, NO, 100 * USDC);
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes");
+
+        // First claim triggers the seed, which charges the intent fee on the whole pool.
+        // feeBps = 130; fee per side = 100e6 * 130 / 10000 = 1.3e6; pool nets to 98.7e6 per side.
+        uint256 protoBefore = collateral.balanceOf(PROTOCOL_TREASURY); // ignore the creation-fee cut
+        uint256 a = _claim(ALICE, marketId); // YES winner (triggers seed + intent fee)
+        uint256 b = _claim(BOB, marketId); // NO loser
+
+        // Winner: net basis 98.7 + full losers' pool 98.7 = 197.4 USDC. Fee WAS charged (basis < 100).
+        assertEq(a, 197_400_000, "winner paid on net basis + net losers' pool");
+        assertEq(b, 0, "loser gets nothing");
+
+        // Conservation: deposits (200) == winner payout (197.4) + fees (2.6). No draining.
+        assertEq(a + 2_600_000, 200 * USDC, "deposits == payouts + fees");
+
+        // Operator slice (10bps) folded into protocol: protocol gets (20+10)/130 of 2.6e6 = 0.6e6.
+        // (Without the fold it would be 0.4e6 to protocol + 0.2e6 to the claimer.)
+        assertEq(collateral.balanceOf(PROTOCOL_TREASURY) - protoBefore, 600_000, "operator fee routed to protocol");
+
+        // Pool fully paid out (only sub-unit dust may remain locked).
+        assertLe(_pool(marketId), 200 * USDC, "no over-draw");
+    }
+
+    function test_intentFee_noFreeRideVsDynamic_andStaysSolvent() public {
+        _enableFees();
+
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createMarket(openTime, closeTime);
+
+        // Intent backers + a dynamic entrant after open: all paths pay the fee.
+        _enterIntent(ALICE, marketId, YES, 50 * USDC);
+        _enterIntent(BOB, marketId, YES, 50 * USDC);
+        _enterIntent(CAROL, marketId, NO, 80 * USDC);
+        uint256 totalDeposited = 180 * USDC;
+
+        // Snapshot the protocol treasury after creation (ignores the creation-fee cut) so the delta
+        // captures the intent seed fee + Dave's dynamic fee, both taken before any claim.
+        uint256 protoBefore = collateral.balanceOf(PROTOCOL_TREASURY);
+
+        vm.warp(openTime);
+        // Dave enters dynamically (pays fee on his amount); also triggers the market seed (intent fee).
+        _enter(DAVE, marketId, YES, 20 * USDC);
+        totalDeposited += 20 * USDC;
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes");
+
+        uint256 paidOut = _claim(ALICE, marketId) + _claim(BOB, marketId) + _claim(DAVE, marketId)
+            + _claim(CAROL, marketId);
+        uint256 feesCollected = collateral.balanceOf(PROTOCOL_TREASURY) - protoBefore;
+        // Venue fee recipient is address(this); we assert on the protocol slice only.
+
+        // Self-funding: nothing minted, nothing drained. Everything paid out + every fee taken must
+        // not exceed what was deposited, and the residual is only rounding dust left in custody.
+        assertLe(paidOut, totalDeposited, "payouts never exceed deposits");
+        assertGt(feesCollected, 0, "fees were actually collected at transition");
+        assertLe(_pool(marketId), totalDeposited, "pool never over-drawn");
+    }
+
+    function testFuzz_intentPlusFees_neverDrainsPool(uint64 y1, uint64 y2, uint64 n1, uint64 n2) public {
+        _enableFees();
+
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createMarket(openTime, closeTime);
+
+        // Random intent on both sides (bounded to keep amounts sane), two backers per side.
+        uint256 sy1 = bound(uint256(y1), 1 * USDC, 1e12);
+        uint256 sy2 = bound(uint256(y2), 1 * USDC, 1e12);
+        uint256 sn1 = bound(uint256(n1), 1 * USDC, 1e12);
+        uint256 sn2 = bound(uint256(n2), 1 * USDC, 1e12);
+        uint256 deposited = sy1 + sy2 + sn1 + sn2;
+
+        _enterIntent(ALICE, marketId, YES, sy1);
+        _enterIntent(BOB, marketId, YES, sy2);
+        _enterIntent(CAROL, marketId, NO, sn1);
+        _enterIntent(DAVE, marketId, NO, sn2);
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Yes");
+
+        // Every winner pays the fee (charged at seed); losers get nothing. The pool can never pay
+        // out more than was deposited — this is the load-bearing "no draining" guarantee.
+        uint256 paidOut = _claim(ALICE, marketId) + _claim(BOB, marketId) + _claim(CAROL, marketId)
+            + _claim(DAVE, marketId);
+        assertLe(paidOut, deposited, "payouts never exceed deposits");
+        // And the fee was actually taken: winners receive strictly less than the full gross pool.
+        assertLt(paidOut, deposited, "intent fee was charged (winners share < gross pool)");
+    }
+
     // =========================================================================
     // Cross-mode guard: CLOB entry points reject a DPM market
     // =========================================================================

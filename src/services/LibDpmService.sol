@@ -33,17 +33,26 @@ import {DpmMarket, MarketFees, FeeBreakdown} from "../interfaces/Types.sol";
  *         pricing, the aggregate, and reuses the shared collateral / fee / stats services. Never
  *         mutates storage directly (that is the aggregate's job).
  *
- *         Money model (the load-bearing invariant `Σ M_i == custody`, exact, par-or-dynamic):
+ *         Money model (the load-bearing invariant `Σ M_i == custody`, with `Σ userPaid <= M_i`
+ *         and `Σ userShares == N_i`, par-or-dynamic):
  *           - enterIntent / exitIntent: 1:1 refundable, no pricing, NO fee (so exit is exact).
- *           - intent -> DPM transition: par, gross, fee-free reallocation (see note below).
+ *           - intent -> DPM seed (once, at the first post-openTime interaction): the entry fee is
+ *             charged on the whole intent pool here. Per outcome `M_i = intentTotals_i - fee_i`
+ *             (net, fee floored), `N_i = intentTotals_i` (gross). The summed fee is distributed.
+ *           - per-user transition: pure allocation — `userShares += stake` (gross), `userPaid +=
+ *             stake - ceil(stake·feeBps)` (net). It never touches M_i / N_i, so totals freeze at
+ *             seed and no claim can drift.
  *           - enter: fee charged on the deposited `amount`; only `amount - fee` enters the pool.
  *           - claim: pays winners `userPaid + (M_other/N_w)·userShares`; refunds on invalid / no-contest.
  *
- *         Why no fee at the intent transition: the plan sketched charging it there, but netting a
- *         per-user fee out of the seeded pool breaks `Σ_u userPaid == M_i` (per-user vs per-market
- *         flooring) and/or mutates `N_w`/`M_other` during the claim phase, which makes sequential
- *         winner claims over-draw the pool. Charging only on dynamic `enter` keeps the identity
- *         exact and freezes M/N before any claim. Intent stake therefore pays no transaction fee.
+ *         Why this shape (the subtle part): the fee MUST be charged at the intent->pool transition,
+ *         else everyone would route deposits through the free intent phase. But shares are kept
+ *         gross (the fee only reduces collateral M, never share count N), so N_i never moves; and
+ *         the fee is taken once at the market seed, never lazily during claims — together these
+ *         freeze M/N before the first payout, so sequential winner claims can't drift. Pairing the
+ *         seed's per-outcome floor with each user's ceil keeps `Σ userPaid <= M_i` (any sub-unit
+ *         dust stays locked in the pool — the solvent direction). The operator fee slice is folded
+ *         into the protocol bucket (DPM has no keeper to receive it).
  */
 library LibDpmService {
     // =========================================================================
@@ -98,19 +107,18 @@ library LibDpmService {
         LibDpmValidator.requireNonZeroAmount(amount);
         _requireTradingAllowed(user, marketId);
 
-        // Lazy intent -> DPM init (per-market once, then per-user) at par, fee-free.
-        if (!LibDpmStorage.getDpmMarket(marketId).poolInitialized) {
-            LibDpmAggregate.seedMarketFromIntent(marketId);
-        }
-        if (!LibDpmStorage.hasTransitioned(marketId, user)) {
-            LibDpmAggregate.transitionUserFromIntent(marketId, user);
-        }
-
         address token = _collateralToken(marketId);
 
-        // Pull the gross amount, then route the fee out of custody; only the net enters the pool.
+        // Lazy intent -> DPM init: seed the market once (charging the intent fee), then fold this
+        // caller's intent into their live position. Both are pure allocation w.r.t. M/N after seed.
+        _seedIfNeeded(marketId, token);
+        _transitionIfNeeded(marketId, user);
+
+        // Pull the gross amount, then route the entry fee out of custody; only the net enters the pool.
         LibVaultCollateralService.depositCollateral(token, user, amount);
-        uint256 netAmount = _chargeEntryFee(marketId, token, amount);
+        uint256 feeOut = _feeOn(marketId, amount);
+        _distributeFee(marketId, token, feeOut);
+        uint256 netAmount = amount - feeOut;
 
         // Pennock inverse against the *other* side; rounds shares down (protocol-favorable).
         uint256 mI = LibDpmStorage.getCollateral(marketId, outcome);
@@ -146,19 +154,19 @@ library LibDpmService {
             // Invalid / split ([1,1] or any non-singleton payout): refund every position.
             payout = _refundAll(marketId, user, oc);
         } else {
-            // Seed (idempotent per market) so the no-contest check sees intent-backed shares.
-            if (!m.poolInitialized) LibDpmAggregate.seedMarketFromIntent(marketId);
+            // Seed (idempotent per market) so the no-contest check sees intent-backed shares. This
+            // also charges the intent fee if it has not been charged yet (pure-intent market that
+            // saw no open-phase entry); the first claimer triggers it.
+            _seedIfNeeded(marketId, _collateralToken(marketId));
 
             if (LibDpmStorage.getShares(marketId, winner) == 0) {
                 // No-contest: nobody backed the winning outcome -> void, refund all.
                 payout = _refundAll(marketId, user, oc);
             } else {
-                // Fold the claimer's intent into their live position at par (fee-free) so a
+                // Fold the claimer's intent into their live position (pure allocation) so a
                 // pure-intent winner is paid. This never changes M_i/N_i (market totals already
                 // include their stake from the seed), so all winners claim against frozen totals.
-                if (!LibDpmStorage.hasTransitioned(marketId, user)) {
-                    LibDpmAggregate.transitionUserFromIntent(marketId, user);
-                }
+                _transitionIfNeeded(marketId, user);
 
                 uint256 nW = LibDpmStorage.getShares(marketId, winner);
                 uint256 mOther = LibDpmStorage.getOtherCollateral(marketId, winner); // pool - M_w
@@ -209,16 +217,84 @@ library LibDpmService {
         if (!hasWinner) winner = 0;
     }
 
-    /// @dev Charge the entry fee on `amount` and route it out of custody via the shared distributor.
-    ///      Returns the net collateral that stays in the pool. `feeOut == amount·totalFeeBps/10000`
-    ///      (== breakdown.totalFee + remainder), so `Σ M_i` stays equal to custody after the fee
-    ///      leaves. Note: the operator slice routes to msg.sender (the entrant) per the shared helper.
-    function _chargeEntryFee(uint256 marketId, address token, uint256 amount) private returns (uint256 netAmount) {
+    // ---- Intent seed + per-user transition ----
+
+    /// @dev Seed the per-market intent -> DPM pool exactly once, charging the intent entry fee on the
+    ///      whole intent pool. Per outcome: M_i = intentTotals_i - floor(intentTotals_i·feeBps) (net),
+    ///      N_i = intentTotals_i (gross). The summed fee is distributed (operator -> protocol), so
+    ///      `Σ M_i == custody` holds after the fee leaves. Triggered by the first post-open enter or
+    ///      the first claim — whoever gets there first pays the gas.
+    function _seedIfNeeded(uint256 marketId, address token) private {
+        if (LibDpmStorage.getDpmMarket(marketId).poolInitialized) return;
+
+        uint256 oc = LibDpmStorage.getDpmMarket(marketId).outcomeCount;
+        uint256 feeBps = _totalFeeBps(marketId);
+        uint256 feeOut;
+        for (uint256 i = 0; i < oc; i++) {
+            uint256 t = LibDpmStorage.getIntentTotal(marketId, i);
+            uint256 fee = (t * feeBps) / BPS_DENOMINATOR; // floor
+            LibDpmAggregate.seedOutcome(marketId, i, t - fee, t); // M_i net, N_i gross
+            feeOut += fee;
+        }
+        LibDpmAggregate.markPoolInitialized(marketId);
+        _distributeFee(marketId, token, feeOut);
+    }
+
+    /// @dev Fold a user's intent into their live position once: gross shares, net paid basis
+    ///      (stake minus the per-user ceil-rounded fee). The fee itself was already distributed at
+    ///      seed; this only allocates, never touching M_i / N_i. Ceil rounding makes `Σ userPaid <=
+    ///      M_i` so the pool can never be over-claimed (sub-unit dust stays locked).
+    function _transitionIfNeeded(uint256 marketId, address user) private {
+        if (LibDpmStorage.hasTransitioned(marketId, user)) return;
+
+        uint256 oc = LibDpmStorage.getDpmMarket(marketId).outcomeCount;
+        uint256 feeBps = _totalFeeBps(marketId);
+        for (uint256 i = 0; i < oc; i++) {
+            uint256 stake = LibDpmStorage.getIntentStake(marketId, user, i);
+            if (stake == 0) continue;
+            uint256 fee = (stake * feeBps + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR; // ceil
+            LibDpmAggregate.recordIntentTransition(marketId, user, i, stake, stake - fee);
+        }
+        LibDpmAggregate.markTransitioned(marketId, user);
+    }
+
+    // ---- Fee math ----
+
+    uint256 private constant BPS_DENOMINATOR = 10_000;
+
+    /// @dev Total DPM fee bps for this market (protocol + venue + operator), or 0 if fees are
+    ///      disabled (no protocol treasury snapshotted at creation).
+    function _totalFeeBps(uint256 marketId) private view returns (uint256) {
+        return LibFeeCalculatorService.getTotalFeeBps(LibFeeCalculatorService.getMarketFees(marketId));
+    }
+
+    /// @dev Fee charged on a fresh `amount` spend (floored). The complement enters the pool.
+    function _feeOn(uint256 marketId, uint256 amount) private view returns (uint256) {
+        return (amount * _totalFeeBps(marketId)) / BPS_DENOMINATOR;
+    }
+
+    /// @dev Distribute exactly `feeOut` to the fee recipients, folding the operator slice into the
+    ///      protocol bucket (DPM `enter`/`seed` has no keeper to receive an operator fee). The split
+    ///      is exact: any component-rounding dust is swept into the protocol remainder, so the sum
+    ///      sent equals `feeOut` and `Σ M_i == custody` is preserved.
+    function _distributeFee(uint256 marketId, address token, uint256 feeOut) private {
+        if (feeOut == 0) return;
         MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
-        FeeBreakdown memory breakdown = LibFeeCalculatorService.calculateFees(amount, fees);
-        uint256 feeOut = breakdown.totalFee + breakdown.remainder;
-        LibFeeDistributionService.distributeFees(token, breakdown, fees, marketId, 0);
-        netAmount = amount - feeOut;
+        LibFeeDistributionService.distributeFees(token, _splitFee(feeOut, fees), fees, marketId, 0);
+    }
+
+    /// @dev Split `feeOut` into a FeeBreakdown summing exactly to `feeOut`, with the operator slice
+    ///      folded into protocol and the creator slice carved from venue. The remainder (rounding
+    ///      dust) is left for protocol, matching how LibFeeDistributionService routes it.
+    function _splitFee(uint256 feeOut, MarketFees memory fees) private pure returns (FeeBreakdown memory bd) {
+        uint256 totalBps = LibFeeCalculatorService.getTotalFeeBps(fees); // protocol + venue + operator
+        if (totalBps == 0) return bd;
+        bd.protocolFee = (feeOut * (fees.protocolFeeBps + fees.operatorFeeBps)) / totalBps; // operator -> protocol
+        bd.creatorFee = (feeOut * fees.creatorFeeBps) / totalBps;
+        bd.venueNetFee = (feeOut * (fees.venueFeeBps - fees.creatorFeeBps)) / totalBps;
+        bd.operatorFee = 0;
+        bd.totalFee = bd.protocolFee + bd.creatorFee + bd.venueNetFee;
+        bd.remainder = feeOut - bd.totalFee; // dust -> protocol in distributeFees
     }
 
     /// @dev Implied per-share price of a fill expressed as a tick (price·1e18 / tickSize), best-effort
