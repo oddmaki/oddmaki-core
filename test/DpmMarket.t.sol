@@ -4,6 +4,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {OddMaki} from "../src/OddMaki.sol";
 import {VaultFacet} from "../src/facets/VaultFacet.sol";
 import {VenueFacet} from "../src/facets/VenueFacet.sol";
@@ -412,6 +413,37 @@ contract DpmMarketTest is Test, DiamondSetup {
         // DPM claim works identically to the UMA path: Above winner gets par refund + losers' pool.
         assertEq(_claim(ALICE, marketId), 20 * USDC, "Above winner paid from Pyth-resolved pool");
         assertEq(_claim(BOB, marketId), 0, "Below loser");
+    }
+
+    /// @notice A DPM price market MUST emit PriceMarketCreatedPyth (now owned by LibPriceMarketService,
+    ///         like MarketCreated is owned by LibMarketCreationService). Without it the subgraph never
+    ///         creates the PriceMarket overlay / flags isPriceMarket, so resolution can't be indexed.
+    function test_priceMarket_emitsPriceMarketCreatedPythForIndexer() public {
+        string[] memory outcomes = new string[](2);
+        outcomes[0] = "Above";
+        outcomes[1] = "Below";
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+
+        vm.recordLogs();
+        _market().createDpmPriceMarket(
+            venueId, ETH_USD_FEED, STRIKE_PRICE, 0, block.timestamp + 1000, outcomes, address(collateral), "q:t,description:x", 0, new bytes32[](0), 0
+        );
+        vm.stopPrank();
+
+        bytes32 topic =
+            keccak256("PriceMarketCreatedPyth(uint256,uint256,bytes32,int64,int32,uint256,uint256,uint256)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == topic) {
+                found = true;
+                // feedId is the 3rd indexed topic — sanity-check it carries the overlay data.
+                assertEq(logs[i].topics[3], ETH_USD_FEED, "event carries the feed id");
+            }
+        }
+        assertTrue(found, "createDpmPriceMarket must emit PriceMarketCreatedPyth");
     }
 
     // =========================================================================

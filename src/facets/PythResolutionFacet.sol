@@ -57,16 +57,8 @@ contract PythResolutionFacet is ReentrancyGuard {
 
     event PythContractUpdated(address indexed pythContract);
 
-    event PriceMarketCreatedPyth(
-        uint256 indexed marketId,
-        uint256 indexed venueId,
-        bytes32 indexed pythFeedId,
-        int64 strikePrice,
-        int32 priceExpo,
-        uint256 openTime,
-        uint256 closeTime,
-        uint256 resolutionWindow
-    );
+    // PriceMarketCreatedPyth is declared and emitted in LibPriceMarketService (shared by the CLOB
+    // and DPM creation paths); it still appears in this facet's ABI because this facet emits it.
 
     event PriceMarketResolvedPyth(
         uint256 indexed marketId,
@@ -162,9 +154,10 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 3. Collect market creation fee
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
 
-        // 4-6. Read the feed exponent, create the standard market (no UMA reward escrowed), and
-        //      store the Pyth price overlay — shared with the DPM price-market path so the
-        //      reward-zeroing footgun lives in exactly one place.
+        // 4-6. Read the feed exponent, create the standard market (no UMA reward escrowed), store the
+        //      Pyth price overlay, and emit PriceMarketCreatedPyth — all shared with the DPM
+        //      price-market path so the reward-zeroing footgun and the indexer event live in exactly
+        //      one place (mirroring how createMarket owns MarketCreated).
         marketId = LibPriceMarketService.createPriceMarketBase(
             msg.sender,
             venueId,
@@ -179,11 +172,6 @@ contract PythResolutionFacet is ReentrancyGuard {
             effectiveOpenTime,
             closeTime,
             resolutionWindow
-        );
-
-        PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
-        emit PriceMarketCreatedPyth(
-            marketId, venueId, pythFeedId, strikePrice, pm.priceExpo, effectiveOpenTime, closeTime, pm.resolutionWindow
         );
     }
 

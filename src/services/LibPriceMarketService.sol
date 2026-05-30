@@ -19,6 +19,22 @@ import {MarketStatus, FeedProvider, PriceMarket} from "../interfaces/Types.sol";
  *         from a window of submitted VAAs, ETH refund handling, and feed metadata reads.
  */
 library LibPriceMarketService {
+    /// @notice Emitted when a Pyth price-market overlay is created — by BOTH the CLOB
+    ///         (PythResolutionFacet.createPriceMarketPyth) and DPM (DpmMarketFacet.createDpmPriceMarket)
+    ///         paths. Declared and emitted here (mirroring MarketCreated in LibMarketCreationService) so
+    ///         the indexer always receives it regardless of which facet created the market. The signature
+    ///         must stay byte-for-byte stable — the subgraph (handlePriceMarketCreatedPyth) decodes it.
+    event PriceMarketCreatedPyth(
+        uint256 indexed marketId,
+        uint256 indexed venueId,
+        bytes32 indexed pythFeedId,
+        int64 strikePrice,
+        int32 priceExpo,
+        uint256 openTime,
+        uint256 closeTime,
+        uint256 resolutionWindow
+    );
+
     /// @notice Read the price exponent for a Pyth feed without updating.
     ///         Uses getPriceUnsafe which returns the last stored data (no fee required).
     ///         The expo field is fixed per feed and always valid regardless of staleness.
@@ -84,6 +100,12 @@ library LibPriceMarketService {
             resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
         pm.strikePrice = strikePrice;
         // openPriceTime stays 0; the resolver fills it for deferred markets at resolution time.
+
+        // Emit the price-overlay creation event here (not in the facet) so every creation path —
+        // CLOB and DPM — indexes identically. MarketCreated already fired inside createMarket above.
+        emit PriceMarketCreatedPyth(
+            marketId, venueId, pythFeedId, strikePrice, priceExpo, effectiveOpenTime, closeTime, pm.resolutionWindow
+        );
     }
 
     /// @notice Refund excess ETH sent beyond the Pyth fees actually consumed.
