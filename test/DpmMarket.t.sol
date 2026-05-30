@@ -10,7 +10,8 @@ import {VenueFacet} from "../src/facets/VenueFacet.sol";
 import {ProtocolFacet} from "../src/facets/ProtocolFacet.sol";
 import {MarketsFacet} from "../src/facets/MarketsFacet.sol";
 import {ResolutionFacet} from "../src/facets/ResolutionFacet.sol";
-import {DpmFacet} from "../src/facets/DpmFacet.sol";
+import {DpmMarketFacet} from "../src/facets/DpmMarketFacet.sol";
+import {DpmTradingFacet} from "../src/facets/DpmTradingFacet.sol";
 import {MarketOrdersFacet} from "../src/facets/MarketOrdersFacet.sol";
 import {LimitOrdersFacet} from "../src/facets/LimitOrdersFacet.sol";
 import {BatchOrdersFacet} from "../src/facets/BatchOrdersFacet.sol";
@@ -85,8 +86,12 @@ contract DpmMarketTest is Test, DiamondSetup {
     // Helpers
     // =========================================================================
 
-    function _dpm() internal view returns (DpmFacet) {
-        return DpmFacet(address(diamond));
+    function _market() internal view returns (DpmMarketFacet) {
+        return DpmMarketFacet(address(diamond));
+    }
+
+    function _trade() internal view returns (DpmTradingFacet) {
+        return DpmTradingFacet(address(diamond));
     }
 
     function _createMarket(uint256 openTime, uint256 closeTime) internal returns (uint256 marketId) {
@@ -97,7 +102,7 @@ contract DpmMarketTest is Test, DiamondSetup {
         string[] memory outcomes = new string[](2);
         outcomes[0] = "Yes";
         outcomes[1] = "No";
-        marketId = _dpm().createDpmMarket(
+        marketId = _market().createDpmMarket(
             venueId, "", outcomes, address(collateral), 0, 7200, openTime, closeTime, new bytes32[](0)
         );
         vm.stopPrank();
@@ -112,13 +117,13 @@ contract DpmMarketTest is Test, DiamondSetup {
     function _enterIntent(address user, uint256 marketId, uint256 outcome, uint256 amount) internal {
         _fund(user, amount);
         vm.prank(user);
-        _dpm().enterIntent(marketId, outcome, amount);
+        _trade().enterIntent(marketId, outcome, amount);
     }
 
     function _enter(address user, uint256 marketId, uint256 outcome, uint256 amount) internal returns (uint256 shares) {
         _fund(user, amount);
         vm.prank(user);
-        shares = _dpm().enter(marketId, outcome, amount);
+        shares = _trade().enter(marketId, outcome, amount);
     }
 
     /// @dev Drive the shared UMA resolution path: assert -> settle -> report. `outcome` of "Yes"/"No"
@@ -135,7 +140,7 @@ contract DpmMarketTest is Test, DiamondSetup {
     }
 
     function _pool(uint256 marketId) internal view returns (uint256) {
-        return _dpm().getMarketCollateral(marketId, YES) + _dpm().getMarketCollateral(marketId, NO);
+        return _market().getMarketCollateral(marketId, YES) + _market().getMarketCollateral(marketId, NO);
     }
 
     // =========================================================================
@@ -146,17 +151,17 @@ contract DpmMarketTest is Test, DiamondSetup {
         uint256 marketId = _createMarket(block.timestamp + 1000, block.timestamp + 2000);
 
         _enterIntent(ALICE, marketId, YES, 10 * USDC);
-        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 10 * USDC, "intent recorded");
+        assertEq(_market().getIntentStake(marketId, ALICE, YES), 10 * USDC, "intent recorded");
         assertEq(collateral.balanceOf(ALICE), 0, "collateral pulled");
 
         vm.prank(ALICE);
-        _dpm().exitIntent(marketId, YES, 4 * USDC);
-        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 6 * USDC, "partial exit");
+        _trade().exitIntent(marketId, YES, 4 * USDC);
+        assertEq(_market().getIntentStake(marketId, ALICE, YES), 6 * USDC, "partial exit");
         assertEq(collateral.balanceOf(ALICE), 4 * USDC, "1:1 refund");
 
         vm.prank(ALICE);
-        _dpm().exitIntent(marketId, YES, 6 * USDC);
-        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 0, "full exit");
+        _trade().exitIntent(marketId, YES, 6 * USDC);
+        assertEq(_market().getIntentStake(marketId, ALICE, YES), 0, "full exit");
         assertEq(collateral.balanceOf(ALICE), 10 * USDC, "fully refunded 1:1");
     }
 
@@ -165,7 +170,7 @@ contract DpmMarketTest is Test, DiamondSetup {
         _enterIntent(ALICE, marketId, YES, 10 * USDC);
         vm.prank(ALICE);
         vm.expectRevert(LibDpmValidator.InsufficientIntentStake.selector);
-        _dpm().exitIntent(marketId, YES, 11 * USDC);
+        _trade().exitIntent(marketId, YES, 11 * USDC);
     }
 
     function test_intent_enterAfterOpenTime_reverts() public {
@@ -175,7 +180,7 @@ contract DpmMarketTest is Test, DiamondSetup {
         _fund(ALICE, 1 * USDC);
         vm.prank(ALICE);
         vm.expectRevert(LibDpmValidator.NotIntentPhase.selector);
-        _dpm().enterIntent(marketId, YES, 1 * USDC);
+        _trade().enterIntent(marketId, YES, 1 * USDC);
     }
 
     // =========================================================================
@@ -196,28 +201,28 @@ contract DpmMarketTest is Test, DiamondSetup {
         // own intent at par, then applies her fresh $10 YES buy dynamically (both sides now live).
         uint256 freshShares = _enter(ALICE, marketId, YES, 10 * USDC);
 
-        DpmMarket memory m = _dpm().getDpmMarket(marketId);
+        DpmMarket memory m = _market().getDpmMarket(marketId);
         assertTrue(m.poolInitialized, "pool seeded");
 
         // Market totals: M_yes = 30 (seed) + 10 (net buy); N_yes = 30 (par) + dynamic shares.
-        assertEq(_dpm().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes seed + buy");
-        assertEq(_dpm().getMarketCollateral(marketId, NO), 10 * USDC, "M_no seed");
+        assertEq(_market().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes seed + buy");
+        assertEq(_market().getMarketCollateral(marketId, NO), 10 * USDC, "M_no seed");
         assertApproxEqAbs(freshShares, 2_876_820, 50, "fresh buy priced dynamically");
 
         // Alice transitioned at par: her 30 intent -> 30 shares + 30 paid, plus the fresh buy.
-        assertEq(_dpm().getIntentStake(marketId, ALICE, YES), 0, "Alice intent folded");
-        assertEq(_dpm().getUserPaid(marketId, ALICE, YES), 40 * USDC, "paid = 30 intent + 10 buy");
-        assertApproxEqAbs(_dpm().getUserShares(marketId, ALICE, YES), 30 * USDC + 2_876_820, 50, "30 par + fresh");
+        assertEq(_market().getIntentStake(marketId, ALICE, YES), 0, "Alice intent folded");
+        assertEq(_market().getUserPaid(marketId, ALICE, YES), 40 * USDC, "paid = 30 intent + 10 buy");
+        assertApproxEqAbs(_market().getUserShares(marketId, ALICE, YES), 30 * USDC + 2_876_820, 50, "30 par + fresh");
 
         // Bob has not acted post-open: still un-transitioned (intent intact, no live shares).
-        assertEq(_dpm().getIntentStake(marketId, BOB, NO), 10 * USDC, "Bob intent pending");
-        assertEq(_dpm().getUserShares(marketId, BOB, NO), 0, "Bob not transitioned");
+        assertEq(_market().getIntentStake(marketId, BOB, NO), 10 * USDC, "Bob intent pending");
+        assertEq(_market().getUserShares(marketId, BOB, NO), 0, "Bob not transitioned");
 
         // Bob's first action transitions him at par (gross), fee-free, then applies his buy.
         _enter(BOB, marketId, NO, 5 * USDC);
-        assertEq(_dpm().getIntentStake(marketId, BOB, NO), 0, "Bob transitioned");
-        assertGe(_dpm().getUserShares(marketId, BOB, NO), 10 * USDC, "10 par + buy shares");
-        assertEq(_dpm().getUserPaid(marketId, BOB, NO), 15 * USDC, "paid = 10 intent + 5 buy");
+        assertEq(_market().getIntentStake(marketId, BOB, NO), 0, "Bob transitioned");
+        assertGe(_market().getUserShares(marketId, BOB, NO), 10 * USDC, "10 par + buy shares");
+        assertEq(_market().getUserPaid(marketId, BOB, NO), 15 * USDC, "paid = 10 intent + 5 buy");
     }
 
     // =========================================================================
@@ -257,8 +262,8 @@ contract DpmMarketTest is Test, DiamondSetup {
         assertEq(bobShares, 20 * USDC);
         assertApproxEqAbs(daveShares, 2_876_820, 50, "Dave ~2.8768 shares");
 
-        assertEq(_dpm().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes");
-        assertEq(_dpm().getMarketCollateral(marketId, NO), 10 * USDC, "M_no");
+        assertEq(_market().getMarketCollateral(marketId, YES), 40 * USDC, "M_yes");
+        assertEq(_market().getMarketCollateral(marketId, NO), 10 * USDC, "M_no");
         assertEq(_pool(marketId), 50 * USDC, "pool == $50");
 
         vm.warp(closeTime);
@@ -298,7 +303,7 @@ contract DpmMarketTest is Test, DiamondSetup {
     function _claim(address user, uint256 marketId) internal returns (uint256 payout) {
         uint256 before = collateral.balanceOf(user);
         vm.prank(user);
-        payout = _dpm().claim(marketId);
+        payout = _trade().claim(marketId);
         assertEq(collateral.balanceOf(user) - before, payout, "payout transferred");
     }
 
@@ -360,7 +365,7 @@ contract DpmMarketTest is Test, DiamondSetup {
         _claim(ALICE, marketId);
         vm.prank(ALICE);
         vm.expectRevert(LibDpmValidator.AlreadyClaimed.selector);
-        _dpm().claim(marketId);
+        _trade().claim(marketId);
     }
 
     function test_claim_beforeResolved_reverts() public {
@@ -370,7 +375,7 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.warp(closeTime); // closed but not resolved
         vm.prank(ALICE);
         vm.expectRevert(LibDpmValidator.NotResolved.selector);
-        _dpm().claim(marketId);
+        _trade().claim(marketId);
     }
 
     // =========================================================================
@@ -388,12 +393,12 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.startPrank(CREATOR);
         collateral.approve(address(diamond), 5 * USDC);
         // Immediate open (no intent), explicit strike $2500, Pyth-resolved.
-        uint256 marketId = _dpm().createDpmPriceMarket(
+        uint256 marketId = _market().createDpmPriceMarket(
             venueId, ETH_USD_FEED, STRIKE_PRICE, 0, closeTime, outcomes, address(collateral), "q:t:ETH,description:x", 0, new bytes32[](0), 0
         );
         vm.stopPrank();
 
-        assertTrue(_dpm().isDpmMarket(marketId), "price market is a DPM market");
+        assertTrue(_market().isDpmMarket(marketId), "price market is a DPM market");
 
         // Par entries on both sides of the pool.
         _enter(ALICE, marketId, 0, 10 * USDC); // Above

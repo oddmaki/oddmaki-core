@@ -31,7 +31,8 @@ import {AccessControlFacet} from "../src/facets/AccessControlFacet.sol";
 import {TagsFacet} from "../src/facets/TagsFacet.sol";
 import {MetadataFacet} from "../src/facets/MetadataFacet.sol";
 import {PriceMarketFacet} from "../src/facets/PriceMarketFacet.sol";
-import {DpmFacet} from "../src/facets/DpmFacet.sol";
+import {DpmMarketFacet} from "../src/facets/DpmMarketFacet.sol";
+import {DpmTradingFacet} from "../src/facets/DpmTradingFacet.sol";
 import {PythResolutionFacet} from "../src/facets/PythResolutionFacet.sol";
 import {BatchOrdersFacet} from "../src/facets/BatchOrdersFacet.sol";
 
@@ -121,7 +122,8 @@ contract DeployOddMakiScript is Script {
     TagsFacet public tagsFacet;
     MetadataFacet public metadataFacet;
     PriceMarketFacet public priceMarketFacet;
-    DpmFacet public dpmFacet;
+    DpmMarketFacet public dpmMarketFacet;
+    DpmTradingFacet public dpmTradingFacet;
     PythResolutionFacet public pythResolutionFacet;
     BatchOrdersFacet public batchOrdersFacet;
 
@@ -263,9 +265,10 @@ contract DeployOddMakiScript is Script {
         priceMarketFacet = new PriceMarketFacet();
         pythResolutionFacet = new PythResolutionFacet();
         batchOrdersFacet = new BatchOrdersFacet();
-        dpmFacet = new DpmFacet();
+        dpmMarketFacet = new DpmMarketFacet();
+        dpmTradingFacet = new DpmTradingFacet();
 
-        console.log("Building diamond cuts (22 facets)...");
+        console.log("Building diamond cuts (23 facets)...");
         IDiamond.FacetCut[] memory cuts = _buildCuts();
 
         // Deploy with deployer as initial owner so configuration calls succeed.
@@ -369,7 +372,7 @@ contract DeployOddMakiScript is Script {
     // -------------------------------------------------------------------------
 
     function _buildCuts() internal view returns (IDiamond.FacetCut[] memory cuts) {
-        cuts = new IDiamond.FacetCut[](22);
+        cuts = new IDiamond.FacetCut[](23);
 
         // 0: DiamondCutFacet
         bytes4[] memory cutSelectors = new bytes4[](1);
@@ -555,26 +558,31 @@ contract DeployOddMakiScript is Script {
         batchOrdersSelectors[2] = BatchOrdersFacet.cancelAndReplace.selector;
         cuts[20] = _cut(address(batchOrdersFacet), batchOrdersSelectors);
 
-        // 21: DpmFacet (dynamic pari-mutuel markets)
-        cuts[21] = _cut(address(dpmFacet), _dpmSelectors());
+        // 21: DpmMarketFacet (DPM creation + views); 22: DpmTradingFacet (intent/enter/claim)
+        cuts[21] = _cut(address(dpmMarketFacet), _dpmMarketSelectors());
+        cuts[22] = _cut(address(dpmTradingFacet), _dpmTradingSelectors());
     }
 
-    function _dpmSelectors() internal pure returns (bytes4[] memory selectors) {
-        selectors = new bytes4[](14);
-        selectors[0] = DpmFacet.createDpmMarket.selector;
-        selectors[13] = DpmFacet.createDpmPriceMarket.selector;
-        selectors[1] = DpmFacet.enterIntent.selector;
-        selectors[2] = DpmFacet.exitIntent.selector;
-        selectors[3] = DpmFacet.enter.selector;
-        selectors[4] = DpmFacet.claim.selector;
-        selectors[5] = DpmFacet.isDpmMarket.selector;
-        selectors[6] = DpmFacet.getDpmMarket.selector;
-        selectors[7] = DpmFacet.getMarketCollateral.selector;
-        selectors[8] = DpmFacet.getMarketShares.selector;
-        selectors[9] = DpmFacet.getIntentStake.selector;
-        selectors[10] = DpmFacet.getUserShares.selector;
-        selectors[11] = DpmFacet.getUserPaid.selector;
-        selectors[12] = DpmFacet.quoteEntryShares.selector;
+    function _dpmMarketSelectors() internal pure returns (bytes4[] memory selectors) {
+        selectors = new bytes4[](10);
+        selectors[0] = DpmMarketFacet.createDpmMarket.selector;
+        selectors[1] = DpmMarketFacet.createDpmPriceMarket.selector;
+        selectors[2] = DpmMarketFacet.isDpmMarket.selector;
+        selectors[3] = DpmMarketFacet.getDpmMarket.selector;
+        selectors[4] = DpmMarketFacet.getMarketCollateral.selector;
+        selectors[5] = DpmMarketFacet.getMarketShares.selector;
+        selectors[6] = DpmMarketFacet.getIntentStake.selector;
+        selectors[7] = DpmMarketFacet.getUserShares.selector;
+        selectors[8] = DpmMarketFacet.getUserPaid.selector;
+        selectors[9] = DpmMarketFacet.quoteEntryShares.selector;
+    }
+
+    function _dpmTradingSelectors() internal pure returns (bytes4[] memory selectors) {
+        selectors = new bytes4[](4);
+        selectors[0] = DpmTradingFacet.enterIntent.selector;
+        selectors[1] = DpmTradingFacet.exitIntent.selector;
+        selectors[2] = DpmTradingFacet.enter.selector;
+        selectors[3] = DpmTradingFacet.claim.selector;
     }
 
     function _cut(address facetAddress, bytes4[] memory selectors) internal pure returns (IDiamond.FacetCut memory) {

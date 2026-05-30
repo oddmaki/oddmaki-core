@@ -16,25 +16,26 @@ import {LibPriceMarketService} from "../services/LibPriceMarketService.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
 
 import {LibDpmService} from "../services/LibDpmService.sol";
+import {LibDpmFeeService} from "../services/LibDpmFeeService.sol";
 import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibDpmStorage} from "../storage/LibDpmStorage.sol";
 import {LibDpmPricingService} from "../services/LibDpmPricingService.sol";
-import {LibFeeCalculatorService} from "../services/LibFeeCalculatorService.sol";
 
 import {DpmMarket, MarketStatus} from "../interfaces/Types.sol";
 
 /**
- * @title DpmFacet
+ * @title DpmMarketFacet
  * @author OddMaki Protocol
- * @notice Entry points for DPM (Dynamic Pari-Mutuel) markets — Pennock 2004 §4 ("DPM I").
- *         A self-funded trading mode parallel to the CLOB: pick a side, deposit collateral, and
- *         price moves with flow. v1 is binary, UMA-resolved, no group / no Pyth / no exit.
+ * @notice Creation + read views for DPM (Dynamic Pari-Mutuel) markets — Pennock 2004 §4 ("DPM I").
+ *         A self-funded trading mode parallel to the CLOB: pick a side, deposit collateral, price
+ *         moves with flow. Trading (intent/enter/claim) lives in DpmTradingFacet; the split keeps
+ *         each facet under the 24KB code-size limit with headroom for the N-outcome group variant.
  *
- *         Thin wrappers: all lifecycle guards, pricing, fees and accounting live in LibDpmService;
- *         this facet adds the diamond `nonReentrant` boundary, creation fee/reward collection
- *         (mirroring MarketsFacet.createMarket), events for indexing, and read-only views.
+ *         v1 supports binary UMA-resolved markets (createDpmMarket) and binary Pyth price markets
+ *         (createDpmPriceMarket). claim() (in DpmTradingFacet) is resolution-source-agnostic — it
+ *         reads the winner from the CTF payout numerators that the shared resolution path writes.
  */
-contract DpmFacet is ReentrancyGuard {
+contract DpmMarketFacet is ReentrancyGuard {
     /// @dev Nominal tick size for the base market. DPM does not tick-quantize; this only satisfies
     ///      the base creation validator and feeds the cosmetic last-trade-tick stat. 1e16 = 1%.
     uint256 private constant DPM_TICK_SIZE = 1e16;
@@ -48,13 +49,9 @@ contract DpmFacet is ReentrancyGuard {
         uint256 openTime,
         uint256 closeTime
     );
-    event DpmIntentEntered(uint256 indexed marketId, address indexed user, uint256 outcome, uint256 amount);
-    event DpmIntentExited(uint256 indexed marketId, address indexed user, uint256 outcome, uint256 amount);
-    event DpmEntered(uint256 indexed marketId, address indexed user, uint256 outcome, uint256 amount, uint256 shares);
-    event DpmClaimed(uint256 indexed marketId, address indexed user, uint256 payout);
 
     // =========================================================================
-    // Creation (v1: binary, UMA-resolved)
+    // Creation (v1: binary — UMA or Pyth)
     // =========================================================================
 
     /**
@@ -189,40 +186,6 @@ contract DpmFacet is ReentrancyGuard {
     }
 
     // =========================================================================
-    // Trading
-    // =========================================================================
-
-    /// @notice Deposit a 1:1 refundable intent stake before openTime (no fee, no pricing).
-    function enterIntent(uint256 marketId, uint256 outcome, uint256 amount) external nonReentrant {
-        LibDpmService.enterIntent(msg.sender, marketId, outcome, amount);
-        emit DpmIntentEntered(marketId, msg.sender, outcome, amount);
-    }
-
-    /// @notice Withdraw a refundable intent stake before openTime (1:1).
-    function exitIntent(uint256 marketId, uint256 outcome, uint256 amount) external nonReentrant {
-        LibDpmService.exitIntent(msg.sender, marketId, outcome, amount);
-        emit DpmIntentExited(marketId, msg.sender, outcome, amount);
-    }
-
-    /// @notice Enter the dynamic pool (openTime <= now < closeTime). Charges the entry fee and
-    ///         buys shares at the Pennock price. Returns the shares minted.
-    function enter(uint256 marketId, uint256 outcome, uint256 amount)
-        external
-        nonReentrant
-        returns (uint256 shares)
-    {
-        shares = LibDpmService.enter(msg.sender, marketId, outcome, amount);
-        emit DpmEntered(marketId, msg.sender, outcome, amount, shares);
-    }
-
-    /// @notice Claim a resolved market's payout (DPM I: refund of price paid + losers'-pool slice;
-    ///         full refund on invalid / no-contest). Returns the collateral paid out.
-    function claim(uint256 marketId) external nonReentrant returns (uint256 payout) {
-        payout = LibDpmService.claim(msg.sender, marketId);
-        emit DpmClaimed(marketId, msg.sender, payout);
-    }
-
-    // =========================================================================
     // Views
     // =========================================================================
 
@@ -257,14 +220,13 @@ contract DpmFacet is ReentrancyGuard {
     }
 
     /// @notice Quote shares received for `amount` collateral on `outcome`, net of the entry fee.
-    /// @dev Advisory: simulates the lazy intent seed (uses intent totals before the pool is
-    ///      initialized) and the protocol-favorable share rounding. Actual fills may differ if the
-    ///      pool state changes before the transaction lands.
+    /// @dev Advisory: uses the same fee rate as `enter` (0 when fees are disabled), simulates the
+    ///      lazy intent seed (intent totals before the pool is initialized), and applies the
+    ///      protocol-favorable share rounding. Actual fills differ if pool state changes first.
     function quoteEntryShares(uint256 marketId, uint256 outcome, uint256 amount) external view returns (uint256) {
         LibDpmValidator.requireValidOutcome(marketId, outcome);
 
-        uint256 totalFeeBps = LibFeeCalculatorService.getSnapshotedTotalFeeBps(marketId);
-        uint256 net = amount - (amount * totalFeeBps) / BPS_DENOMINATOR;
+        uint256 net = amount - (amount * LibDpmFeeService.feeBps(marketId)) / BPS_DENOMINATOR;
 
         bool seeded = LibDpmStorage.getDpmMarket(marketId).poolInitialized;
         uint256 mI;
