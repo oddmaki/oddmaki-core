@@ -12,7 +12,6 @@ import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
 import {LibProtocolValidator} from "../validators/LibProtocolValidator.sol";
 import {LibMarketCreationFeeService} from "../services/LibMarketCreationFeeService.sol";
-import {LibMarketCreationService} from "../services/LibMarketCreationService.sol";
 import {LibResolutionService} from "../services/LibResolutionService.sol";
 import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
 import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
@@ -163,56 +162,28 @@ contract PythResolutionFacet is ReentrancyGuard {
         // 3. Collect market creation fee
         LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
 
-        // 4. Read priceExpo from the feed (no VAA submission, no Pyth fee at creation).
-        int32 priceExpo = LibPriceMarketService.getFeedExponent(pythFeedId);
-
-        // 5. Create standard market via shared service
-        marketId = LibMarketCreationService.createMarket(
+        // 4-6. Read the feed exponent, create the standard market (no UMA reward escrowed), and
+        //      store the Pyth price overlay — shared with the DPM price-market path so the
+        //      reward-zeroing footgun lives in exactly one place.
+        marketId = LibPriceMarketService.createPriceMarketBase(
             msg.sender,
             venueId,
             ancillaryData,
             outcomes,
             tickSize,
             collateralToken,
-            0, // additionalReward: 0 for price markets
             liveness,
-            0, // groupId: standalone
-            MarketStatus.Active,
-            tags
+            tags,
+            pythFeedId,
+            strikePrice,
+            effectiveOpenTime,
+            closeTime,
+            resolutionWindow
         );
 
-        // 5b. Zero the UMA reward stored on the oracle.
-        //     LibMarketCreationService stores `venue.umaRewardAmount` in MarketOracleData.reward,
-        //     but `createPriceMarketPyth` deliberately does NOT escrow that amount from the creator
-        //     (unlike MarketsFacet.createMarket). If a price market ever falls back to UMA
-        //     assertion, `LibResolutionService.payStandaloneReward` would attempt to transfer
-        //     `oracle.reward` from the Diamond — funds the Diamond never held — and revert,
-        //     locking the market and the asserter's bond. Forcing reward = 0 here makes that
-        //     code path a safe no-op (the asserter still recovers their bond from UMA), and is
-        //     the on-chain expression of "price markets are Pyth-only; UMA is not a fallback."
-        //     If Pyth resolution fails permanently, holders use {markPriceMarketInvalid} for a
-        //     50/50 refund.
-        LibMarketOracleStorage.getMarketOracleData(
-            LibMarketRegistryStorage.getMarketRegistryData(marketId).questionId
-        ).reward = 0;
-
-        // 6. Store price market overlay
-        uint256 effectiveWindow =
-            resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
-
         PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
-        pm.feedId = pythFeedId;
-        pm.feedProvider = FeedProvider.PYTH;
-        pm.openTime = effectiveOpenTime;
-        pm.closeTime = closeTime;
-        pm.priceExpo = priceExpo;
-        pm.resolutionWindow = effectiveWindow;
-        pm.strikePrice = strikePrice;
-        // openPriceTime stays 0; the resolver fills it for deferred markets when the
-        // open VAA is captured at resolution time.
-
         emit PriceMarketCreatedPyth(
-            marketId, venueId, pythFeedId, strikePrice, priceExpo, effectiveOpenTime, closeTime, effectiveWindow
+            marketId, venueId, pythFeedId, strikePrice, pm.priceExpo, effectiveOpenTime, closeTime, pm.resolutionWindow
         );
     }
 

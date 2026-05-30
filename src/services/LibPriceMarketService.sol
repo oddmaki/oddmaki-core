@@ -8,6 +8,10 @@ import {PythStructs} from "lib/pyth-sdk-solidity/PythStructs.sol";
 import {IPythExtended} from "../interfaces/IPythExtended.sol";
 import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
+import {LibMarketCreationService} from "./LibMarketCreationService.sol";
+import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
+import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
+import {MarketStatus, FeedProvider, PriceMarket} from "../interfaces/Types.sol";
 
 /**
  * @title LibPriceMarketService
@@ -23,6 +27,63 @@ library LibPriceMarketService {
         IPyth pyth = IPyth(pythContract);
         PythStructs.Price memory price = pyth.getPriceUnsafe(pythFeedId);
         return price.expo;
+    }
+
+    /// @notice Create the base OddMaki market + Pyth price overlay shared by `createPriceMarketPyth`
+    ///         and the DPM price-market path. Does NOT do venue/access/collateral guards or collect
+    ///         the creation fee — those stay in the calling facet (they need msg.sender / differ per
+    ///         entry). Steps: read the feed exponent, create a standard Active market with the UMA
+    ///         reward NOT escrowed (additionalReward 0), force `oracle.reward = 0` (price markets are
+    ///         Pyth-only; a non-zero reward would make a UMA fallback transfer funds the Diamond never
+    ///         held and lock the market — see PythResolutionFacet), then write the price overlay.
+    /// @return marketId The allocated market id.
+    function createPriceMarketBase(
+        address creator,
+        uint256 venueId,
+        bytes calldata ancillaryData,
+        string[] calldata outcomes,
+        uint256 tickSize,
+        address collateralToken,
+        uint64 liveness,
+        bytes32[] calldata tags,
+        bytes32 pythFeedId,
+        int64 strikePrice,
+        uint256 effectiveOpenTime,
+        uint256 closeTime,
+        uint256 resolutionWindow
+    ) internal returns (uint256 marketId) {
+        int32 priceExpo = getFeedExponent(pythFeedId);
+
+        marketId = LibMarketCreationService.createMarket(
+            creator,
+            venueId,
+            ancillaryData,
+            outcomes,
+            tickSize,
+            collateralToken,
+            0, // additionalReward: price markets do not escrow a UMA reward
+            liveness,
+            0, // groupId: standalone
+            MarketStatus.Active,
+            tags
+        );
+
+        // Force the stored UMA reward to zero (createMarket copies venue.umaRewardAmount, but price
+        // markets never escrowed it). Keeps any UMA fallback a safe no-op.
+        LibMarketOracleStorage.getMarketOracleData(
+            LibMarketRegistryStorage.getMarketRegistryData(marketId).questionId
+        ).reward = 0;
+
+        PriceMarket storage pm = LibPriceMarketStorage.getPriceMarket(marketId);
+        pm.feedId = pythFeedId;
+        pm.feedProvider = FeedProvider.PYTH;
+        pm.openTime = effectiveOpenTime;
+        pm.closeTime = closeTime;
+        pm.priceExpo = priceExpo;
+        pm.resolutionWindow =
+            resolutionWindow > 0 ? resolutionWindow : LibPriceMarketStorage.DEFAULT_RESOLUTION_WINDOW;
+        pm.strikePrice = strikePrice;
+        // openPriceTime stays 0; the resolver fills it for deferred markets at resolution time.
     }
 
     /// @notice Refund excess ETH sent beyond the Pyth fees actually consumed.

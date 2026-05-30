@@ -274,8 +274,9 @@ contract DiamondSetup is Test {
     }
 
     function _dpmSelectors() private pure returns (bytes4[] memory selectors) {
-        selectors = new bytes4[](13);
+        selectors = new bytes4[](14);
         selectors[0] = DpmFacet.createDpmMarket.selector;
+        selectors[13] = DpmFacet.createDpmPriceMarket.selector;
         selectors[1] = DpmFacet.enterIntent.selector;
         selectors[2] = DpmFacet.exitIntent.selector;
         selectors[3] = DpmFacet.enter.selector;

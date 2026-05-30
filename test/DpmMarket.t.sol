@@ -15,6 +15,8 @@ import {MarketOrdersFacet} from "../src/facets/MarketOrdersFacet.sol";
 import {LimitOrdersFacet} from "../src/facets/LimitOrdersFacet.sol";
 import {BatchOrdersFacet} from "../src/facets/BatchOrdersFacet.sol";
 import {MatchingFacet} from "../src/facets/MatchingFacet.sol";
+import {PythResolutionFacet} from "../src/facets/PythResolutionFacet.sol";
+import {PriceMarketFacet} from "../src/facets/PriceMarketFacet.sol";
 import {LibDpmValidator} from "../src/validators/LibDpmValidator.sol";
 import {DpmMarket, MarketRegistryData, Side, MarketOrderType} from "../src/interfaces/Types.sol";
 import {BatchOrderParams} from "../src/interfaces/IBatchOrders.sol";
@@ -22,6 +24,7 @@ import {DiamondSetup} from "./helpers/DiamondSetup.sol";
 import {MockCTF} from "./helpers/MockCTF.sol";
 import {MockERC20} from "./helpers/MockERC20.sol";
 import {MockUmaOracle} from "./helpers/MockUmaOracle.sol";
+import {MockPythUnique} from "./helpers/MockPythUnique.sol";
 
 /**
  * @title DPM market end-to-end tests
@@ -36,7 +39,13 @@ contract DpmMarketTest is Test, DiamondSetup {
     MockCTF internal ctf;
     MockERC20 internal collateral;
     MockUmaOracle internal umaOracle;
+    MockPythUnique internal mockPyth;
     uint256 internal venueId;
+
+    bytes32 internal constant ETH_USD_FEED = bytes32(uint256(0xff61));
+    int32 internal constant PRICE_EXPO = -8;
+    int64 internal constant STRIKE_PRICE = 2500e8; // $2500
+    address internal constant RESOLVER = address(0x8E501);
 
     address internal constant CREATOR = address(0xC8EA);
     address internal constant ASSERTER = address(0xA553E7);
@@ -60,6 +69,14 @@ contract DpmMarketTest is Test, DiamondSetup {
         ProtocolFacet(address(diamond)).setCollateralWhitelisted(address(collateral), true);
         ProtocolFacet(address(diamond)).setUmaOracle(address(umaOracle));
         ProtocolFacet(address(diamond)).setUmaIdentifier(UMA_IDENTIFIER);
+
+        mockPyth = new MockPythUnique(60, 1); // 60s valid period, 1 wei fee
+        PythResolutionFacet(address(diamond)).setPythContract(address(mockPyth));
+        vm.deal(RESOLVER, 1 ether);
+        // Prime the feed so getPriceUnsafe (read at creation for the exponent) returns a value.
+        bytes[] memory initData = new bytes[](1);
+        initData[0] = mockPyth.createPriceFeedUpdateData(ETH_USD_FEED, 2000e8, 0, PRICE_EXPO, 2000e8, 0, uint64(block.timestamp));
+        mockPyth.updatePriceFeeds{value: 1}(initData);
 
         venueId = createDefaultVenue(address(diamond));
     }
@@ -262,6 +279,22 @@ contract DpmMarketTest is Test, DiamondSetup {
         assertLe(50 * USDC - total, 3, "floor dust < 1 micro-USDC per winner");
     }
 
+    /// @dev Resolve a strike DPM price market via Pyth with a single close-window VAA.
+    function _resolvePyth(uint256 marketId, int64 closePrice, uint256 closeTime) internal {
+        // Note: hoist the uint64 casts into locals — nesting `uint64(closeTime - 1)` directly in the
+        // call args trips a via_ir codegen quirk (spurious arithmetic panic) on this toolchain.
+        uint64 pub = uint64(closeTime);
+        uint64 prev = pub - 1;
+        bytes memory vaa = mockPyth.createPriceFeedUpdateDataUnique(
+            ETH_USD_FEED, closePrice, 0, PRICE_EXPO, closePrice, 0, prev, pub
+        );
+        bytes[] memory pythData = new bytes[](1);
+        pythData[0] = vaa;
+        uint256 fee = mockPyth.getUpdateFee(pythData);
+        vm.prank(RESOLVER);
+        PythResolutionFacet(address(diamond)).resolvePriceMarketPyth{value: fee}(marketId, pythData);
+    }
+
     function _claim(address user, uint256 marketId) internal returns (uint256 payout) {
         uint256 before = collateral.balanceOf(user);
         vm.prank(user);
@@ -338,6 +371,42 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.prank(ALICE);
         vm.expectRevert(LibDpmValidator.NotResolved.selector);
         _dpm().claim(marketId);
+    }
+
+    // =========================================================================
+    // Price (Pyth) DPM markets — same pool, Pyth resolution
+    // =========================================================================
+
+    function test_priceMarket_pythResolution_winnerPaid() public {
+        uint256 closeTime = block.timestamp + 1000;
+
+        string[] memory outcomes = new string[](2);
+        outcomes[0] = "Above";
+        outcomes[1] = "Below";
+
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        // Immediate open (no intent), explicit strike $2500, Pyth-resolved.
+        uint256 marketId = _dpm().createDpmPriceMarket(
+            venueId, ETH_USD_FEED, STRIKE_PRICE, 0, closeTime, outcomes, address(collateral), "q:t:ETH,description:x", 0, new bytes32[](0), 0
+        );
+        vm.stopPrank();
+
+        assertTrue(_dpm().isDpmMarket(marketId), "price market is a DPM market");
+
+        // Par entries on both sides of the pool.
+        _enter(ALICE, marketId, 0, 10 * USDC); // Above
+        _enter(BOB, marketId, 1, 10 * USDC); // Below
+
+        vm.warp(closeTime);
+        // Close price $3000 >= strike $2500 => Above (outcome 0) wins. Resolved via the shared
+        // LibResolutionService path, writing the CTF numerators claim() reads — no UMA assertion.
+        _resolvePyth(marketId, 3000e8, closeTime);
+
+        // DPM claim works identically to the UMA path: Above winner gets par refund + losers' pool.
+        assertEq(_claim(ALICE, marketId), 20 * USDC, "Above winner paid from Pyth-resolved pool");
+        assertEq(_claim(BOB, marketId), 0, "Below loser");
     }
 
     // =========================================================================

@@ -12,6 +12,9 @@ import {LibProtocolValidator} from "../validators/LibProtocolValidator.sol";
 import {LibVenueStorage} from "../storage/LibVenueStorage.sol";
 import {TransferHelper} from "../libraries/TransferHelper.sol";
 
+import {LibPriceMarketService} from "../services/LibPriceMarketService.sol";
+import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
+
 import {LibDpmService} from "../services/LibDpmService.sol";
 import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibDpmStorage} from "../storage/LibDpmStorage.sol";
@@ -111,6 +114,75 @@ contract DpmFacet is ReentrancyGuard {
         );
 
         // DPM overlay: binary => outcomeCount 2.
+        LibDpmService.initPool(marketId, 2, effectiveOpenTime, closeTime);
+
+        emit DpmMarketCreated(marketId, venueId, msg.sender, 2, effectiveOpenTime, closeTime);
+    }
+
+    /**
+     * @notice Create a binary DPM market resolved by a Pyth price feed (Up/Down or explicit strike).
+     *         Same pool mechanics as the UMA variant; only the resolution source differs — claim()
+     *         reads the winner from the CTF payout numerators that the shared Pyth resolution path
+     *         writes, exactly as for UMA.
+     * @param venueId          Venue (existing, active).
+     * @param pythFeedId       Pyth price feed id.
+     * @param strikePrice      `0` => Up/Down (open price captured at openTime); `> 0` => strike market.
+     * @param openTime         Dynamic pricing / open-price-window start; `0` => immediate (no intent).
+     * @param closeTime        Trading ends / close-price window start (strictly after openTime).
+     * @param outcomes         Outcome labels — must be length 2 (e.g. ["Up", "Down"]).
+     * @param collateralToken  ERC20 collateral for the pool.
+     * @param ancillaryData    Title + resolution description.
+     * @param liveness         Stored UMA liveness (unused; price markets resolve via Pyth).
+     * @param tags             Off-chain indexing tags.
+     * @param resolutionWindow Pyth timestamp tolerance in seconds (0 => default 60s).
+     * @return marketId        The allocated market identifier.
+     */
+    function createDpmPriceMarket(
+        uint256 venueId,
+        bytes32 pythFeedId,
+        int64 strikePrice,
+        uint256 openTime,
+        uint256 closeTime,
+        string[] calldata outcomes,
+        address collateralToken,
+        bytes calldata ancillaryData,
+        uint64 liveness,
+        bytes32[] calldata tags,
+        uint256 resolutionWindow
+    ) external nonReentrant returns (uint256 marketId) {
+        LibVenueValidator.requireActiveVenue(venueId);
+        LibAccessControlValidator.validateCreationAccess(msg.sender, venueId);
+        LibProtocolValidator.requireWhitelistedCollateral(collateralToken);
+
+        // Pyth + DPM lifecycle validation. openTime == 0 is the "immediate" sentinel (no intent phase).
+        LibPriceMarketValidator.requirePythConfigured();
+        if (strikePrice < 0) revert LibPriceMarketValidator.ZeroStrikePrice();
+        LibDpmValidator.requireValidOpenTime(openTime);
+        uint256 effectiveOpenTime = openTime == 0 ? block.timestamp : openTime;
+        LibDpmValidator.requireValidCloseTime(effectiveOpenTime, closeTime);
+        LibPriceMarketValidator.requireValidResolutionWindow(resolutionWindow);
+
+        // Creation fee only — price markets do not escrow a UMA reward.
+        LibMarketCreationFeeService.collectCreationFee(venueId, msg.sender, collateralToken);
+
+        // Base market + Pyth overlay (nominal tick; outcomes length 2 enforced downstream).
+        marketId = LibPriceMarketService.createPriceMarketBase(
+            msg.sender,
+            venueId,
+            ancillaryData,
+            outcomes,
+            DPM_TICK_SIZE,
+            collateralToken,
+            liveness,
+            tags,
+            pythFeedId,
+            strikePrice,
+            effectiveOpenTime,
+            closeTime,
+            resolutionWindow
+        );
+
+        // DPM overlay: binary => outcomeCount 2. DPM open/close == the Pyth observation window.
         LibDpmService.initPool(marketId, 2, effectiveOpenTime, closeTime);
 
         emit DpmMarketCreated(marketId, venueId, msg.sender, 2, effectiveOpenTime, closeTime);
