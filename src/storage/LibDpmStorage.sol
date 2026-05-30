@@ -13,7 +13,7 @@ import {DpmMarket} from "../interfaces/Types.sol";
  *         holds only the pari-mutuel pool state.
  *
  *         Per-outcome aggregates and per-user balances are stored in flat mappings keyed by
- *         outcome index (rather than dynamic arrays) so N-outcome groups need no array allocation
+ *         outcome index (rather than dynamic arrays) so any outcome count needs no array allocation
  *         and per-user state stays sparse.
  *
  *         See docs/dpm-markets-plan.md and docs/dpm-pricing-math.md for the full design.

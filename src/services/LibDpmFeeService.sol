@@ -9,9 +9,8 @@ import {LibFeeDistributionService} from "./LibFeeDistributionService.sol";
 
 /**
  * @title LibDpmFeeService
- * @notice DPM fee math, separated from the trading saga (LibDpmService) so it can be reused by the
- *         intent seed, the dynamic `enter`, and future market types (e.g. groups) without each one
- *         re-deriving the split. Two responsibilities:
+ * @notice DPM fee math, separated from the trading saga (LibDpmService) so the intent seed and the
+ *         dynamic `enter` share one definition of the fee split. Two responsibilities:
  *           - {feeBps}: the snapshotted total fee rate for a market (0 if fees are disabled).
  *           - {distribute}: route an exact `feeOut` amount to the fee recipients, folding the
  *             operator slice into the protocol bucket (DPM `enter`/`seed` has no keeper to receive

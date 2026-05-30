@@ -11,8 +11,7 @@ import {LibDpmService} from "../services/LibDpmService.sol";
  * @author OddMaki Protocol
  * @notice Trading entry points for DPM (Dynamic Pari-Mutuel) markets — Pennock 2004 §4 ("DPM I"):
  *         intent enter/exit, dynamic enter, and claim. Creation and views live in DpmMarketFacet;
- *         the split keeps each facet well under the 24KB code-size limit with headroom for the
- *         N-outcome group variant still to come.
+ *         the split keeps each facet well under the 24KB code-size limit.
  *
  *         Thin wrappers: every lifecycle guard, pricing, fee, accounting, and event emission lives
  *         in LibDpmService (events are service-owned so they carry post-state for the event-sourced

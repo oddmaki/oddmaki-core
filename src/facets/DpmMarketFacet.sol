@@ -29,9 +29,9 @@ import {DpmMarket, MarketStatus} from "../interfaces/Types.sol";
  * @notice Creation + read views for DPM (Dynamic Pari-Mutuel) markets — Pennock 2004 §4 ("DPM I").
  *         A self-funded trading mode parallel to the CLOB: pick a side, deposit collateral, price
  *         moves with flow. Trading (intent/enter/claim) lives in DpmTradingFacet; the split keeps
- *         each facet under the 24KB code-size limit with headroom for the N-outcome group variant.
+ *         each facet well under the 24KB code-size limit.
  *
- *         v1 supports binary UMA-resolved markets (createDpmMarket) and binary Pyth price markets
+ *         Supports binary UMA-resolved markets (createDpmMarket) and binary Pyth price markets
  *         (createDpmPriceMarket). claim() (in DpmTradingFacet) is resolution-source-agnostic — it
  *         reads the winner from the CTF payout numerators that the shared resolution path writes.
  */
@@ -51,7 +51,7 @@ contract DpmMarketFacet is ReentrancyGuard {
     );
 
     // =========================================================================
-    // Creation (v1: binary — UMA or Pyth)
+    // Creation (binary — UMA or Pyth)
     // =========================================================================
 
     /**

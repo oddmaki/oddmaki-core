@@ -12,8 +12,7 @@ import {IConditionalTokens} from "../interfaces/IConditionalTokens.sol";
  * @title LibDpmResolutionService
  * @notice Reads the resolved winner for a DPM market. DPM has no resolve function of its own — it
  *         reads the outcome the shared UMA / Pyth resolution paths wrote to the CTF payout numerators.
- *         Isolated from the claim saga so the oracle-read dependency lives in one place and so the
- *         group (neg-risk) variant can branch here when N-outcome DPM markets land.
+ *         Isolated from the claim saga so the oracle-read dependency lives in one place.
  */
 library LibDpmResolutionService {
     /// @notice Classify a resolved market's CTF payout numerators.
