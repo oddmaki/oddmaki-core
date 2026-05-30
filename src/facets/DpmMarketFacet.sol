@@ -113,7 +113,8 @@ contract DpmMarketFacet is ReentrancyGuard {
             liveness,
             0,
             MarketStatus.Active,
-            tags
+            tags,
+            true // DPM markets may be N-outcome (count already bounded to 2..MAX above)
         );
 
         LibDpmService.initPool(marketId, outcomes.length, effectiveOpenTime, closeTime);

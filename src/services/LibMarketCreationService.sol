@@ -76,12 +76,15 @@ library LibMarketCreationService {
         uint64 liveness,
         uint256 groupId,
         MarketStatus initialStatus,
-        bytes32[] memory tags
+        bytes32[] memory tags,
+        bool allowMultiOutcome
     ) internal returns (uint256 marketId) {
-        // Step 1: Validate inputs. Binary markets (CLOB + binary DPM) use exactly 2 outcomes;
-        //         N-outcome DPM markets pass N (> 2). The oracle/condition layer below is sized from
-        //         `outcomes.length`, so the only binary-specific step is vault registration (Step 8).
+        // Step 1: Validate inputs. Tokenized binary markets (CLOB orderbook + binary DPM) MUST have
+        //         exactly 2 outcomes; only multi-outcome DPM (allowMultiOutcome) may exceed 2. The
+        //         oracle/condition layer below is sized from `outcomes.length`; the binary-specific
+        //         step is vault registration (Step 8), itself gated on length == 2.
         if (outcomes.length < 2) revert InvalidOutcomesLength();
+        if (!allowMultiOutcome && outcomes.length != 2) revert InvalidOutcomesLength();
         LibTickSizeValidator.requireValidTickSize(tickSize);
         LibTagValidator.validateTagsMemory(tags);
 

@@ -659,6 +659,23 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.stopPrank();
     }
 
+    /// @notice Regression guard: relaxing createMarket for DPM must NOT let a regular binary CLOB
+    ///         market be created with > 2 outcomes (it would be a broken, vault-less market).
+    function test_binaryProtection_clobCreateRejectsThreeOutcomes() public {
+        string[] memory three = new string[](3);
+        three[0] = "A";
+        three[1] = "B";
+        three[2] = "C";
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        vm.expectRevert(); // InvalidOutcomesLength — CLOB markets are binary (allowMultiOutcome = false)
+        MarketsFacet(address(diamond)).createMarket(
+            venueId, "", three, 1e16, address(collateral), 0, 7200, new bytes32[](0)
+        );
+        vm.stopPrank();
+    }
+
     function test_priceMarket_rejectsNonBinary() public {
         string[] memory three = new string[](3);
         three[0] = "Up";

@@ -90,7 +90,8 @@ contract MarketsFacet is ReentrancyGuard {
             liveness,
             0, // groupId: standalone
             MarketStatus.Active,
-            tags
+            tags,
+            false // binary CLOB market — exactly 2 outcomes
         );
     }
 
@@ -227,7 +228,8 @@ contract MarketsFacet is ReentrancyGuard {
             group.liveness,
             groupId,
             MarketStatus.Draft,
-            emptyTags
+            emptyTags,
+            false // binary group market (Yes/No)
         );
 
         // Register in group storage

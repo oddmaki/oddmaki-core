@@ -81,7 +81,8 @@ library LibPriceMarketService {
             liveness,
             0, // groupId: standalone
             MarketStatus.Active,
-            tags
+            tags,
+            false // price markets are binary (above/below)
         );
 
         // Force the stored UMA reward to zero (createMarket copies venue.umaRewardAmount, but price
