@@ -580,6 +580,41 @@ contract DpmMarketTest is Test, DiamondSetup {
     }
 
     // =========================================================================
+    // Indexer events
+    // =========================================================================
+
+    function test_events_seedAndEnter_carryPoolStateForIndexer() public {
+        uint256 openTime = block.timestamp + 1000;
+        uint256 marketId = _createMarket(openTime, openTime + 1000);
+        _enterIntent(ALICE, marketId, YES, 30 * USDC);
+        _enterIntent(BOB, marketId, NO, 10 * USDC);
+        vm.warp(openTime);
+
+        vm.recordLogs();
+        _enter(CAROL, marketId, YES, 10 * USDC); // first post-open action -> triggers the lazy seed
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bytes32 seededTopic = keccak256("DpmPoolSeeded(uint256,uint256[],uint256[])");
+        bytes32 enteredTopic = keccak256("DpmEntered(uint256,address,uint256,uint256,uint256,uint256,uint256)");
+        bool seenSeed;
+        bool seenEnter;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length == 0) continue;
+            if (logs[i].topics[0] == seededTopic) seenSeed = true;
+            if (logs[i].topics[0] == enteredTopic) {
+                seenEnter = true;
+                // Non-indexed data: outcome, amount, shares, newCollateral, newShares.
+                (,,, uint256 newCollateral, uint256 newShares) =
+                    abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+                assertEq(newCollateral, _market().getMarketCollateral(marketId, YES), "DpmEntered carries live M_yes");
+                assertEq(newShares, _market().getMarketShares(marketId, YES), "DpmEntered carries live N_yes");
+            }
+        }
+        assertTrue(seenSeed, "the seeding action must emit DpmPoolSeeded");
+        assertTrue(seenEnter, "enter must emit DpmEntered");
+    }
+
+    // =========================================================================
     // Cross-mode guard: CLOB entry points reject a DPM market
     // =========================================================================
 

@@ -50,6 +50,23 @@ import {DpmMarket} from "../interfaces/Types.sol";
  *         into the protocol bucket (DPM has no keeper to receive it).
  */
 library LibDpmService {
+    // Events are declared and emitted here (not in the facet) so they are owned in one place and
+    // carry post-state for the indexer — which is event-sourced and does not call views for live
+    // state. They still appear in the calling facet's ABI because that facet emits them.
+    event DpmPoolSeeded(uint256 indexed marketId, uint256[] collateral, uint256[] shares);
+    event DpmIntentEntered(uint256 indexed marketId, address indexed user, uint256 outcome, uint256 amount);
+    event DpmIntentExited(uint256 indexed marketId, address indexed user, uint256 outcome, uint256 amount);
+    event DpmEntered(
+        uint256 indexed marketId,
+        address indexed user,
+        uint256 outcome,
+        uint256 amount,
+        uint256 shares,
+        uint256 newCollateral,
+        uint256 newShares
+    );
+    event DpmClaimed(uint256 indexed marketId, address indexed user, uint256 payout);
+
     // =========================================================================
     // Creation
     // =========================================================================
@@ -73,6 +90,7 @@ library LibDpmService {
 
         LibVaultCollateralService.depositCollateral(_collateralToken(marketId), user, amount);
         LibDpmAggregate.recordIntentStake(marketId, user, outcome, amount);
+        emit DpmIntentEntered(marketId, user, outcome, amount);
     }
 
     /// @dev No pause / access gate: a refundable intent stake must always be retrievable before
@@ -86,6 +104,7 @@ library LibDpmService {
 
         LibDpmAggregate.releaseIntentStake(marketId, user, outcome, amount);
         LibVaultCollateralService.withdrawCollateral(_collateralToken(marketId), user, amount);
+        emit DpmIntentExited(marketId, user, outcome, amount);
     }
 
     // =========================================================================
@@ -125,6 +144,18 @@ library LibDpmService {
         // Shared protocol stats (volume on gross spend; implied last-trade tick).
         LibMarketTradingAggregate.recordTotalVolume(marketId, outcome, amount);
         LibMarketTradingAggregate.recordLastTradeTick(marketId, outcome, _impliedTick(marketId, netAmount, sharesOut));
+
+        // Carry the resulting pool state for the traded outcome so the indexer projects probability
+        // (M_i / pool) without recomputing the fee or replaying Pennock pricing.
+        emit DpmEntered(
+            marketId,
+            user,
+            outcome,
+            amount,
+            sharesOut,
+            LibDpmStorage.getCollateral(marketId, outcome),
+            LibDpmStorage.getShares(marketId, outcome)
+        );
 
         // Interaction last: route the entry fee out of custody now that the pool accounting is final.
         LibDpmFeeService.distribute(marketId, token, feeOut);
@@ -179,6 +210,7 @@ library LibDpmService {
         if (payout > 0) {
             LibVaultCollateralService.withdrawCollateral(_collateralToken(marketId), user, payout);
         }
+        emit DpmClaimed(marketId, user, payout);
     }
 
     // =========================================================================
@@ -209,13 +241,20 @@ library LibDpmService {
         uint256 oc = LibDpmStorage.getDpmMarket(marketId).outcomeCount;
         uint256 bps = LibDpmFeeService.feeBps(marketId);
         uint256 feeOut;
+        uint256[] memory collateral = new uint256[](oc);
+        uint256[] memory shares = new uint256[](oc);
         for (uint256 i = 0; i < oc; i++) {
             uint256 t = LibDpmStorage.getIntentTotal(marketId, i);
             uint256 fee = (t * bps) / BPS_DENOMINATOR; // floor
-            LibDpmAggregate.seedOutcome(marketId, i, t - fee, t); // M_i net, N_i gross
+            collateral[i] = t - fee; // M_i net
+            shares[i] = t; // N_i gross
+            LibDpmAggregate.seedOutcome(marketId, i, collateral[i], shares[i]);
             feeOut += fee;
         }
         LibDpmAggregate.markPoolInitialized(marketId);
+        // Signal the intent -> DPM pool transition with the initialized M_i / N_i so the indexer can
+        // switch the market to pool mode and project probabilities without recomputing the seed fee.
+        emit DpmPoolSeeded(marketId, collateral, shares);
         LibDpmFeeService.distribute(marketId, token, feeOut);
     }
 
