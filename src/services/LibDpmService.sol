@@ -11,7 +11,6 @@ import {LibDpmFeeService} from "./LibDpmFeeService.sol";
 import {LibDpmResolutionService} from "./LibDpmResolutionService.sol";
 
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
-import {LibMarketTradingAggregate} from "../aggregates/LibMarketTradingAggregate.sol";
 import {LibVaultCollateralService} from "./LibVaultCollateralService.sol";
 
 import {LibMarketOrderValidator} from "../validators/LibMarketOrderValidator.sol";
@@ -141,9 +140,9 @@ library LibDpmService {
 
         LibDpmAggregate.recordDpmEntry(marketId, user, outcome, netAmount, sharesOut);
 
-        // Shared protocol stats (volume on gross spend; implied last-trade tick).
-        LibMarketTradingAggregate.recordTotalVolume(marketId, outcome, amount);
-        LibMarketTradingAggregate.recordLastTradeTick(marketId, outcome, _impliedTick(marketId, netAmount, sharesOut));
+        // Note: DPM does not write the CLOB's MarketTradingData volume/lastTradeTick — those are
+        // binary uint256[2] arrays and would be out of bounds for outcome >= 2. The DpmEntered event
+        // below carries the volume (amount) and the resulting pool state for the indexer instead.
 
         // Carry the resulting pool state for the traded outcome so the indexer projects probability
         // (M_i / pool) without recomputing the fee or replaying Pennock pricing.
@@ -279,17 +278,6 @@ library LibDpmService {
     // ---- Stats + small shared reads ----
 
     uint256 private constant BPS_DENOMINATOR = 10_000;
-
-    /// @dev Implied per-share price of a fill expressed as a tick (price·1e18 / tickSize), best-effort
-    ///      for off-chain stats only. DPM prices can exceed $1/share for late buyers; that is expected
-    ///      and harmless here (DPM markets are guarded out of the CLOB mark-price paths).
-    function _impliedTick(uint256 marketId, uint256 netAmount, uint256 shares) private view returns (uint256) {
-        if (shares == 0) return 0;
-        uint256 tickSize = LibMarketTradingStorage.getMarketTradingData(marketId).tickSize;
-        if (tickSize == 0) return 0;
-        // pricePerShare (1e18) = netAmount·1e18 / shares; tick = pricePerShare / tickSize.
-        return (netAmount * 1e18 / shares) / tickSize;
-    }
 
     function _requireTradingAllowed(address user, uint256 marketId) private view {
         LibMarketOrderValidator.requireActiveMarket(marketId);

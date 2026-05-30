@@ -78,8 +78,10 @@ library LibMarketCreationService {
         MarketStatus initialStatus,
         bytes32[] memory tags
     ) internal returns (uint256 marketId) {
-        // Step 1: Validate inputs.
-        if (outcomes.length != 2) revert InvalidOutcomesLength();
+        // Step 1: Validate inputs. Binary markets (CLOB + binary DPM) use exactly 2 outcomes;
+        //         N-outcome DPM markets pass N (> 2). The oracle/condition layer below is sized from
+        //         `outcomes.length`, so the only binary-specific step is vault registration (Step 8).
+        if (outcomes.length < 2) revert InvalidOutcomesLength();
         LibTickSizeValidator.requireValidTickSize(tickSize);
         LibTagValidator.validateTagsMemory(tags);
 
@@ -130,11 +132,15 @@ library LibMarketCreationService {
             questionId, enrichedAncillaryData, outcomes, collateralToken, reward, requiredBond, liveness
         );
 
-        // Step 8: Vault registration — computes [YES, NO] position IDs.
-        //   groupId > 0 signals that wrapped collateral (NegRisk) is needed.
-        bool needsWrapping = groupId > 0;
-        uint256[2] memory positionIds =
-            LibVaultRegistrationService.registerCondition(conditionId, collateralToken, needsWrapping);
+        // Step 8: Vault registration — computes [YES, NO] CTF outcome-token position IDs. This is
+        //   binary-only: N-outcome markets (DPM) trade no outcome tokens, so they skip registration
+        //   and carry empty position IDs. groupId > 0 signals wrapped collateral (NegRisk), which is
+        //   itself binary, so it only ever co-occurs with outcomes.length == 2.
+        uint256[2] memory positionIds;
+        if (outcomes.length == 2) {
+            bool needsWrapping = groupId > 0;
+            positionIds = LibVaultRegistrationService.registerCondition(conditionId, collateralToken, needsWrapping);
+        }
 
         // Step 9: Write Trading — all fields now available.
         LibMarketTradingAggregate.createTrading(
