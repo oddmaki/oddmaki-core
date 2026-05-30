@@ -57,4 +57,18 @@ library LibMarketOracleAggregate {
         if (!o.initialized) revert OracleNotInitialized();
         o.activeAssertionId = assertionId;
     }
+
+    /// @notice Append an outcome and re-point the oracle at the larger CTF condition.
+    /// @dev Used by DPM to add a late outcome (e.g. a new candidate). The condition slot count is
+    ///      baked into the conditionId, so growing the outcome set means a fresh (N+1)-slot condition
+    ///      — the caller must have prepared it. No CTF tokens exist for DPM, so nothing migrates.
+    function appendOutcome(bytes32 questionId, bytes32 newConditionId, uint256 newOutcomeSlotCount, string memory label)
+        internal
+    {
+        MarketOracleData storage o = LibMarketOracleStorage.getMarketOracleData(questionId);
+        if (!o.initialized) revert OracleNotInitialized();
+        o.conditionId = newConditionId;
+        o.outcomeSlotCount = newOutcomeSlotCount;
+        o.outcomes.push(label);
+    }
 }

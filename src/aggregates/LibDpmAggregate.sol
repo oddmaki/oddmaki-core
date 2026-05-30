@@ -108,4 +108,10 @@ library LibDpmAggregate {
     function markClaimed(uint256 marketId, address user) internal {
         LibDpmStorage.getStorage().claimed[marketId][user] = true;
     }
+
+    /// @notice Set a market's outcome count (used when a late outcome is added). The new outcome's
+    ///         M/N start at 0 (par-until-contested) — the flat mappings need no resizing.
+    function setOutcomeCount(uint256 marketId, uint256 outcomeCount) internal {
+        LibDpmStorage.getStorage().byMarketId[marketId].outcomeCount = outcomeCount;
+    }
 }

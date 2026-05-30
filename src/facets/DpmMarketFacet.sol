@@ -15,8 +15,11 @@ import {TransferHelper} from "../libraries/TransferHelper.sol";
 import {LibPriceMarketService} from "../services/LibPriceMarketService.sol";
 import {LibPriceMarketValidator} from "../validators/LibPriceMarketValidator.sol";
 
+import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
+
 import {LibDpmService} from "../services/LibDpmService.sol";
 import {LibDpmFeeService} from "../services/LibDpmFeeService.sol";
+import {LibDpmOutcomeService} from "../services/LibDpmOutcomeService.sol";
 import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibDpmStorage} from "../storage/LibDpmStorage.sol";
 import {LibDpmPricingService} from "../services/LibDpmPricingService.sol";
@@ -189,6 +192,23 @@ contract DpmMarketFacet is ReentrancyGuard {
         LibDpmService.initPool(marketId, 2, effectiveOpenTime, closeTime);
 
         emit DpmMarketCreated(marketId, venueId, msg.sender, 2, effectiveOpenTime, closeTime);
+    }
+
+    /**
+     * @notice Add a late outcome to a live DPM market (e.g. a candidate who enters after open).
+     *         Only the venue operator, only while trading is live (before closeTime). Grows the CTF
+     *         condition to one more slot — see LibDpmOutcomeService. The new outcome starts empty
+     *         (par-until-contested). Not available on price markets (binary by nature).
+     * @return outcomeIndex The index assigned to the new outcome.
+     */
+    function addDpmOutcome(uint256 marketId, string calldata label)
+        external
+        nonReentrant
+        returns (uint256 outcomeIndex)
+    {
+        uint256 venueId = LibMarketRegistryStorage.getMarketRegistryData(marketId).venueId;
+        LibVenueValidator.requireExistingVenueOperator(venueId, msg.sender);
+        return LibDpmOutcomeService.addOutcome(marketId, label);
     }
 
     // =========================================================================

@@ -674,6 +674,62 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.stopPrank();
     }
 
+    function test_nOutcome_addLateOutcome_thenResolveToIt() public {
+        uint256 closeTime = block.timestamp + 1000;
+        string[] memory outcomes = new string[](3);
+        outcomes[0] = "Alice";
+        outcomes[1] = "Bob";
+        outcomes[2] = "Carol";
+        uint256 marketId = _createCategorical(outcomes, 0, closeTime);
+
+        _enter(ALICE, marketId, 0, 10 * USDC); // Alice
+        _enter(BOB, marketId, 1, 10 * USDC); // Bob
+
+        // Dave joins the race mid-market. The test contract is the venue operator (createDefaultVenue).
+        uint256 daveIdx = _market().addDpmOutcome(marketId, "Dave");
+        assertEq(daveIdx, 3, "Dave is the 4th outcome (index 3)");
+        assertEq(_market().getDpmMarket(marketId).outcomeCount, 4, "market is now 4-way");
+
+        // The new outcome starts empty -> par-until-contested for its first backer.
+        uint256 daveShares = _enter(CAROL, marketId, 3, 20 * USDC);
+        assertEq(daveShares, 20 * USDC, "par on the freshly-added outcome");
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Dave"); // assert the late candidate by name; computePayouts maps it to slot 3
+
+        // pool = 40; M_dave = 20; M_other = 20; N_dave = 20 -> Carol redeems 20 + (20/20)*20 = $40.
+        assertEq(_claim(CAROL, marketId), 40 * USDC, "late winner paid the full pool");
+        assertEq(_claim(ALICE, marketId), 0, "loser 0");
+        assertEq(_claim(BOB, marketId), 0, "loser 0");
+    }
+
+    function test_addLateOutcome_guards() public {
+        uint256 closeTime = block.timestamp + 1000;
+        string[] memory outcomes = new string[](3);
+        outcomes[0] = "Alice";
+        outcomes[1] = "Bob";
+        outcomes[2] = "Carol";
+        uint256 marketId = _createCategorical(outcomes, 0, closeTime);
+
+        // Non-operator cannot add.
+        vm.prank(ALICE);
+        vm.expectRevert();
+        _market().addDpmOutcome(marketId, "Dave");
+
+        // Duplicate label rejected.
+        vm.expectRevert(LibDpmValidator.DuplicateOutcome.selector);
+        _market().addDpmOutcome(marketId, "Bob");
+
+        // Empty label rejected.
+        vm.expectRevert(LibDpmValidator.EmptyOutcomeLabel.selector);
+        _market().addDpmOutcome(marketId, "");
+
+        // Cannot add once trading has closed.
+        vm.warp(closeTime);
+        vm.expectRevert(LibDpmValidator.TradingClosed.selector);
+        _market().addDpmOutcome(marketId, "Dave");
+    }
+
     // =========================================================================
     // Indexer events
     // =========================================================================

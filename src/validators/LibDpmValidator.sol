@@ -38,6 +38,8 @@ library LibDpmValidator {
     error AlreadyClaimed();
     error InsufficientIntentStake();
     error NotResolved();          // claim requires the underlying market resolved by the oracle
+    error EmptyOutcomeLabel();    // addDpmOutcome: label must be non-empty
+    error DuplicateOutcome();     // addDpmOutcome: label already present (would alias on resolution)
 
     // ---- Mode guards ----
 
@@ -103,6 +105,12 @@ library LibDpmValidator {
     /// @notice Closed: now >= closeTime (resolution / claim window).
     function requireClosed(uint256 marketId) internal view {
         if (block.timestamp < LibDpmStorage.getDpmMarket(marketId).closeTime) revert TradingClosed();
+    }
+
+    /// @notice Before close: now < closeTime (outcomes may only be added while trading is live, i.e.
+    ///         during the intent or open phase — never after trading ends or once resolvable).
+    function requireBeforeClose(uint256 marketId) internal view {
+        if (block.timestamp >= LibDpmStorage.getDpmMarket(marketId).closeTime) revert TradingClosed();
     }
 
     /// @notice Guard against double-claim.
