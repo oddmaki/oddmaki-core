@@ -124,7 +124,7 @@ contract DpmMarketTest is Test, DiamondSetup {
     function _enter(address user, uint256 marketId, uint256 outcome, uint256 amount) internal returns (uint256 shares) {
         _fund(user, amount);
         vm.prank(user);
-        shares = _trade().enter(marketId, outcome, amount);
+        shares = _trade().enter(marketId, outcome, amount, 0); // minSharesOut 0 (slippage opt-out in tests)
     }
 
     /// @dev Drive the shared UMA resolution path: assert -> settle -> report. `outcome` of "Yes"/"No"
@@ -745,6 +745,126 @@ contract DpmMarketTest is Test, DiamondSetup {
         vm.warp(closeTime);
         vm.expectRevert(LibDpmValidator.TradingClosed.selector);
         _market().addDpmOutcome(marketId, "Dave");
+    }
+
+    function _threeOutcomes() internal pure returns (string[] memory o) {
+        o = new string[](3);
+        o[0] = "Alice";
+        o[1] = "Bob";
+        o[2] = "Carol";
+    }
+
+    function test_nOutcome_noContest_winnerUnbacked_refundsAll() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createCategorical(_threeOutcomes(), 0, closeTime);
+        _enter(ALICE, marketId, 0, 10 * USDC);
+        _enter(BOB, marketId, 1, 10 * USDC);
+        // Nobody backs Carol (outcome 2).
+        vm.warp(closeTime);
+        _resolve(marketId, "Carol"); // Carol wins but N_carol == 0 -> no-contest -> refund all
+        assertEq(_claim(ALICE, marketId), 10 * USDC, "Alice refunded");
+        assertEq(_claim(BOB, marketId), 10 * USDC, "Bob refunded");
+    }
+
+    function test_nOutcome_invalid_refundsAll() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createCategorical(_threeOutcomes(), 0, closeTime);
+        _enter(ALICE, marketId, 0, 10 * USDC);
+        _enter(BOB, marketId, 1, 7 * USDC);
+        _enter(CAROL, marketId, 2, 5 * USDC);
+        vm.warp(closeTime);
+        _resolve(marketId, "Invalid"); // unrecognized -> all-1s -> refund all
+        assertEq(_claim(ALICE, marketId), 10 * USDC, "Alice refunded");
+        assertEq(_claim(BOB, marketId), 7 * USDC, "Bob refunded");
+        assertEq(_claim(CAROL, marketId), 5 * USDC, "Carol refunded");
+    }
+
+    function test_enter_slippageGuard() public {
+        uint256 marketId = _createMarket(0, block.timestamp + 1000);
+        _fund(ALICE, 10 * USDC);
+        vm.prank(ALICE);
+        // Par mints exactly 10e6 shares; demanding 10e6+1 must revert.
+        vm.expectRevert(LibDpmValidator.SlippageExceeded.selector);
+        _trade().enter(marketId, YES, 10 * USDC, 10 * USDC + 1);
+    }
+
+    function test_addLateOutcome_blockedOnPriceMarket() public {
+        uint256 closeTime = block.timestamp + 1000;
+        string[] memory o = new string[](2);
+        o[0] = "Up";
+        o[1] = "Down";
+        collateral.mint(CREATOR, 5 * USDC);
+        vm.startPrank(CREATOR);
+        collateral.approve(address(diamond), 5 * USDC);
+        uint256 marketId = _market().createDpmPriceMarket(
+            venueId, ETH_USD_FEED, STRIKE_PRICE, 0, closeTime, o, address(collateral), "q:t", 0, new bytes32[](0), 0
+        );
+        vm.stopPrank();
+        vm.expectRevert(LibDpmValidator.PriceMarketOutcomesAreFixed.selector);
+        _market().addDpmOutcome(marketId, "Flat");
+    }
+
+    function test_addLateOutcome_blockedWhileAsserting() public {
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createCategorical(_threeOutcomes(), 0, closeTime);
+        _enter(ALICE, marketId, 0, 10 * USDC);
+
+        // Open an assertion against the current outcome set (locks the question).
+        bytes32 qid = MarketsFacet(address(diamond)).getMarketRegistryData(marketId).questionId;
+        collateral.mint(ASSERTER, 10 * USDC);
+        vm.startPrank(ASSERTER);
+        collateral.approve(address(diamond), 10 * USDC);
+        ResolutionFacet(address(diamond)).assertMarketOutcome(qid, "Alice");
+        vm.stopPrank();
+
+        vm.expectRevert(LibDpmValidator.AssertionInFlight.selector);
+        _market().addDpmOutcome(marketId, "Dave");
+    }
+
+    function test_lateOutcome_addedDuringIntent_seedsAndResolves() public {
+        uint256 openTime = block.timestamp + 1000;
+        uint256 closeTime = openTime + 1000;
+        uint256 marketId = _createCategorical(_threeOutcomes(), openTime, closeTime);
+
+        // Add Dave during the intent phase, then intent-stake on him.
+        _market().addDpmOutcome(marketId, "Dave");
+        _enterIntent(ALICE, marketId, 0, 10 * USDC); // Alice intent
+        _enterIntent(BOB, marketId, 3, 20 * USDC); // Dave intent (the late outcome)
+
+        vm.warp(openTime);
+        _enter(CAROL, marketId, 0, 5 * USDC); // first post-open action -> triggers the 4-outcome seed
+        // Dave's intent (20) seeded into N[3] (gross, par).
+        assertEq(_market().getMarketShares(marketId, 3), 20 * USDC, "Dave intent seeded into the pool");
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Dave");
+        // Bob (Dave intent 20) is the dominant Dave backer; he wins a share of the losers' pool.
+        assertGt(_claim(BOB, marketId), 20 * USDC, "Dave intent backer paid > stake");
+        assertEq(_claim(ALICE, marketId), 0, "Alice lost");
+    }
+
+    function testFuzz_nOutcome_neverDrainsWithFees(uint64 a, uint64 b, uint64 c, uint64 d) public {
+        _enableFees();
+        uint256 closeTime = block.timestamp + 1000;
+        uint256 marketId = _createCategorical(_threeOutcomes(), 0, closeTime);
+
+        uint256 sa = bound(uint256(a), 1 * USDC, 1e12);
+        uint256 sb = bound(uint256(b), 1 * USDC, 1e12);
+        uint256 sc = bound(uint256(c), 1 * USDC, 1e12);
+        uint256 sd = bound(uint256(d), 1 * USDC, 1e12);
+        uint256 deposited = sa + sb + sc + sd;
+
+        _enter(ALICE, marketId, 0, sa);
+        _enter(BOB, marketId, 1, sb);
+        _enter(CAROL, marketId, 2, sc);
+        _enter(DAVE, marketId, 0, sd); // second Alice backer
+
+        vm.warp(closeTime);
+        _resolve(marketId, "Alice");
+
+        uint256 paidOut = _claim(ALICE, marketId) + _claim(BOB, marketId) + _claim(CAROL, marketId)
+            + _claim(DAVE, marketId);
+        assertLe(paidOut, deposited, "N-outcome payouts never exceed deposits");
     }
 
     // =========================================================================

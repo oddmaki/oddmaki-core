@@ -9,6 +9,7 @@ import {LibDpmAggregate} from "../aggregates/LibDpmAggregate.sol";
 import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
 import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
 import {LibMarketOracleAggregate} from "../aggregates/LibMarketOracleAggregate.sol";
+import {LibPriceMarketStorage} from "../storage/LibPriceMarketStorage.sol";
 import {LibVaultStorage} from "../storage/LibVaultStorage.sol";
 import {IConditionalTokens} from "../interfaces/IConditionalTokens.sol";
 import {MarketOracleData} from "../interfaces/Types.sol";
@@ -36,6 +37,9 @@ library LibDpmOutcomeService {
     /// @notice Append `label` as a new outcome on `marketId`. Caller authorization is enforced by the facet.
     function addOutcome(uint256 marketId, string calldata label) internal returns (uint256 newIndex) {
         LibDpmValidator.requireIsDpmMarket(marketId);
+        // Price (Pyth) markets resolve to a fixed 2-slot payout; growing the outcome set would write
+        // the resolution to the wrong condition. Outcome addition is UMA-categorical only.
+        if (LibPriceMarketStorage.isPriceMarket(marketId)) revert LibDpmValidator.PriceMarketOutcomesAreFixed();
         LibDpmValidator.requireBeforeClose(marketId);
         if (bytes(label).length == 0) revert LibDpmValidator.EmptyOutcomeLabel();
 
@@ -45,6 +49,9 @@ library LibDpmOutcomeService {
 
         bytes32 questionId = LibMarketRegistryStorage.getMarketRegistryData(marketId).questionId;
         MarketOracleData storage oracle = LibMarketOracleStorage.getMarketOracleData(questionId);
+
+        // Don't change the outcome set once an assertion is open against the current set.
+        if (oracle.activeAssertionId != bytes32(0)) revert LibDpmValidator.AssertionInFlight();
 
         // Reject a duplicate label — two identical strings would alias on the resolution string match.
         bytes32 labelHash = keccak256(bytes(label));

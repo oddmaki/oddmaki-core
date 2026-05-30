@@ -40,6 +40,9 @@ library LibDpmValidator {
     error NotResolved();          // claim requires the underlying market resolved by the oracle
     error EmptyOutcomeLabel();    // addDpmOutcome: label must be non-empty
     error DuplicateOutcome();     // addDpmOutcome: label already present (would alias on resolution)
+    error SlippageExceeded();             // enter: shares minted < caller's minSharesOut
+    error PriceMarketOutcomesAreFixed();  // addDpmOutcome: price markets are binary (2-slot payout)
+    error AssertionInFlight();            // addDpmOutcome: an outcome assertion is already open
 
     // ---- Mode guards ----
 

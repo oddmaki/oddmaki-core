@@ -110,7 +110,7 @@ library LibDpmService {
     // Open phase (openTime <= t < closeTime) — dynamic Pennock pricing, fee on entry
     // =========================================================================
 
-    function enter(address user, uint256 marketId, uint256 outcome, uint256 amount)
+    function enter(address user, uint256 marketId, uint256 outcome, uint256 amount, uint256 minSharesOut)
         internal
         returns (uint256 sharesOut)
     {
@@ -137,6 +137,10 @@ library LibDpmService {
         uint256 mI = LibDpmStorage.getCollateral(marketId, outcome);
         uint256 nOther = LibDpmStorage.getOtherShares(marketId, outcome);
         sharesOut = LibDpmPricingService.sharesForCollateral(mI, nOther, netAmount);
+
+        // Slippage guard: the dynamic price moves with flow, so a buy can mint fewer shares than
+        // quoted if others enter first (or sandwich the tx). Caller passes minSharesOut (0 to opt out).
+        if (sharesOut < minSharesOut) revert LibDpmValidator.SlippageExceeded();
 
         LibDpmAggregate.recordDpmEntry(marketId, user, outcome, netAmount, sharesOut);
 

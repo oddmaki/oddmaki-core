@@ -30,13 +30,14 @@ contract DpmTradingFacet is ReentrancyGuard {
     }
 
     /// @notice Enter the dynamic pool (openTime <= now < closeTime). Charges the entry fee and
-    ///         buys shares at the Pennock price. Returns the shares minted.
-    function enter(uint256 marketId, uint256 outcome, uint256 amount)
+    ///         buys shares at the Pennock price. Reverts if fewer than `minSharesOut` shares would be
+    ///         minted (slippage protection; pass 0 to opt out). Returns the shares minted.
+    function enter(uint256 marketId, uint256 outcome, uint256 amount, uint256 minSharesOut)
         external
         nonReentrant
         returns (uint256 shares)
     {
-        return LibDpmService.enter(msg.sender, marketId, outcome, amount);
+        return LibDpmService.enter(msg.sender, marketId, outcome, amount, minSharesOut);
     }
 
     /// @notice Claim a resolved market's payout (DPM I: refund of price paid + losers'-pool slice;
