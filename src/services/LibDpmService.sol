@@ -7,24 +7,19 @@ import {LibDpmStorage} from "../storage/LibDpmStorage.sol";
 import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibDpmAggregate} from "../aggregates/LibDpmAggregate.sol";
 import {LibDpmPricingService} from "./LibDpmPricingService.sol";
+import {LibDpmFeeService} from "./LibDpmFeeService.sol";
+import {LibDpmResolutionService} from "./LibDpmResolutionService.sol";
 
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
-import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
-import {LibMarketOracleStorage} from "../storage/LibMarketOracleStorage.sol";
-import {LibVaultStorage} from "../storage/LibVaultStorage.sol";
 import {LibMarketTradingAggregate} from "../aggregates/LibMarketTradingAggregate.sol";
-
 import {LibVaultCollateralService} from "./LibVaultCollateralService.sol";
-import {LibFeeCalculatorService} from "./LibFeeCalculatorService.sol";
-import {LibFeeDistributionService} from "./LibFeeDistributionService.sol";
 
 import {LibMarketOrderValidator} from "../validators/LibMarketOrderValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
 
-import {IConditionalTokens} from "../interfaces/IConditionalTokens.sol";
-import {DpmMarket, MarketFees, FeeBreakdown} from "../interfaces/Types.sol";
+import {DpmMarket} from "../interfaces/Types.sol";
 
 /**
  * @title LibDpmService
@@ -114,10 +109,10 @@ library LibDpmService {
         _seedIfNeeded(marketId, token);
         _transitionIfNeeded(marketId, user);
 
-        // Pull the gross amount, then route the entry fee out of custody; only the net enters the pool.
+        // Pull the gross amount. Only the net (amount - fee) enters the pool; the fee is routed out
+        // LAST, after all DPM accounting, so the post-state external call is effects-before-interaction.
         LibVaultCollateralService.depositCollateral(token, user, amount);
-        uint256 feeOut = _feeOn(marketId, amount);
-        _distributeFee(marketId, token, feeOut);
+        uint256 feeOut = (amount * LibDpmFeeService.feeBps(marketId)) / BPS_DENOMINATOR;
         uint256 netAmount = amount - feeOut;
 
         // Pennock inverse against the *other* side; rounds shares down (protocol-favorable).
@@ -127,9 +122,12 @@ library LibDpmService {
 
         LibDpmAggregate.recordDpmEntry(marketId, user, outcome, netAmount, sharesOut);
 
-        // Keep the shared protocol stats populated (volume on gross spend; implied last-trade tick).
+        // Shared protocol stats (volume on gross spend; implied last-trade tick).
         LibMarketTradingAggregate.recordTotalVolume(marketId, outcome, amount);
         LibMarketTradingAggregate.recordLastTradeTick(marketId, outcome, _impliedTick(marketId, netAmount, sharesOut));
+
+        // Interaction last: route the entry fee out of custody now that the pool accounting is final.
+        LibDpmFeeService.distribute(marketId, token, feeOut);
     }
 
     // =========================================================================
@@ -148,7 +146,7 @@ library LibDpmService {
         DpmMarket storage m = LibDpmStorage.getDpmMarket(marketId);
         uint256 oc = m.outcomeCount;
 
-        (bool hasWinner, uint256 winner) = _winningOutcome(marketId, oc);
+        (bool hasWinner, uint256 winner) = LibDpmResolutionService.winningOutcome(marketId, oc);
 
         if (!hasWinner) {
             // Invalid / split ([1,1] or any non-singleton payout): refund every position.
@@ -198,25 +196,6 @@ library LibDpmService {
         }
     }
 
-    /// @dev Read the resolved payout numerators from the CTF and classify: exactly one non-zero
-    ///      numerator is a clean winner; zero or more-than-one (e.g. [1,1]) is invalid / split.
-    function _winningOutcome(uint256 marketId, uint256 oc) private view returns (bool hasWinner, uint256 winner) {
-        bytes32 conditionId = LibMarketOracleStorage.getMarketOracleData(
-            LibMarketRegistryStorage.getMarketRegistryData(marketId).questionId
-        ).conditionId;
-        IConditionalTokens ctf = IConditionalTokens(LibVaultStorage.getCtf());
-
-        uint256 nonZero;
-        for (uint256 i = 0; i < oc; i++) {
-            if (ctf.payoutNumerators(conditionId, i) != 0) {
-                nonZero++;
-                winner = i;
-            }
-        }
-        hasWinner = (nonZero == 1);
-        if (!hasWinner) winner = 0;
-    }
-
     // ---- Intent seed + per-user transition ----
 
     /// @dev Seed the per-market intent -> DPM pool exactly once, charging the intent entry fee on the
@@ -228,16 +207,16 @@ library LibDpmService {
         if (LibDpmStorage.getDpmMarket(marketId).poolInitialized) return;
 
         uint256 oc = LibDpmStorage.getDpmMarket(marketId).outcomeCount;
-        uint256 feeBps = _totalFeeBps(marketId);
+        uint256 bps = LibDpmFeeService.feeBps(marketId);
         uint256 feeOut;
         for (uint256 i = 0; i < oc; i++) {
             uint256 t = LibDpmStorage.getIntentTotal(marketId, i);
-            uint256 fee = (t * feeBps) / BPS_DENOMINATOR; // floor
+            uint256 fee = (t * bps) / BPS_DENOMINATOR; // floor
             LibDpmAggregate.seedOutcome(marketId, i, t - fee, t); // M_i net, N_i gross
             feeOut += fee;
         }
         LibDpmAggregate.markPoolInitialized(marketId);
-        _distributeFee(marketId, token, feeOut);
+        LibDpmFeeService.distribute(marketId, token, feeOut);
     }
 
     /// @dev Fold a user's intent into their live position once: gross shares, net paid basis
@@ -248,54 +227,19 @@ library LibDpmService {
         if (LibDpmStorage.hasTransitioned(marketId, user)) return;
 
         uint256 oc = LibDpmStorage.getDpmMarket(marketId).outcomeCount;
-        uint256 feeBps = _totalFeeBps(marketId);
+        uint256 bps = LibDpmFeeService.feeBps(marketId);
         for (uint256 i = 0; i < oc; i++) {
             uint256 stake = LibDpmStorage.getIntentStake(marketId, user, i);
             if (stake == 0) continue;
-            uint256 fee = (stake * feeBps + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR; // ceil
+            uint256 fee = (stake * bps + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR; // ceil
             LibDpmAggregate.recordIntentTransition(marketId, user, i, stake, stake - fee);
         }
         LibDpmAggregate.markTransitioned(marketId, user);
     }
 
-    // ---- Fee math ----
+    // ---- Stats + small shared reads ----
 
     uint256 private constant BPS_DENOMINATOR = 10_000;
-
-    /// @dev Total DPM fee bps for this market (protocol + venue + operator), or 0 if fees are
-    ///      disabled (no protocol treasury snapshotted at creation).
-    function _totalFeeBps(uint256 marketId) private view returns (uint256) {
-        return LibFeeCalculatorService.getTotalFeeBps(LibFeeCalculatorService.getMarketFees(marketId));
-    }
-
-    /// @dev Fee charged on a fresh `amount` spend (floored). The complement enters the pool.
-    function _feeOn(uint256 marketId, uint256 amount) private view returns (uint256) {
-        return (amount * _totalFeeBps(marketId)) / BPS_DENOMINATOR;
-    }
-
-    /// @dev Distribute exactly `feeOut` to the fee recipients, folding the operator slice into the
-    ///      protocol bucket (DPM `enter`/`seed` has no keeper to receive an operator fee). The split
-    ///      is exact: any component-rounding dust is swept into the protocol remainder, so the sum
-    ///      sent equals `feeOut` and `Σ M_i == custody` is preserved.
-    function _distributeFee(uint256 marketId, address token, uint256 feeOut) private {
-        if (feeOut == 0) return;
-        MarketFees memory fees = LibFeeCalculatorService.getMarketFees(marketId);
-        LibFeeDistributionService.distributeFees(token, _splitFee(feeOut, fees), fees, marketId, 0);
-    }
-
-    /// @dev Split `feeOut` into a FeeBreakdown summing exactly to `feeOut`, with the operator slice
-    ///      folded into protocol and the creator slice carved from venue. The remainder (rounding
-    ///      dust) is left for protocol, matching how LibFeeDistributionService routes it.
-    function _splitFee(uint256 feeOut, MarketFees memory fees) private pure returns (FeeBreakdown memory bd) {
-        uint256 totalBps = LibFeeCalculatorService.getTotalFeeBps(fees); // protocol + venue + operator
-        if (totalBps == 0) return bd;
-        bd.protocolFee = (feeOut * (fees.protocolFeeBps + fees.operatorFeeBps)) / totalBps; // operator -> protocol
-        bd.creatorFee = (feeOut * fees.creatorFeeBps) / totalBps;
-        bd.venueNetFee = (feeOut * (fees.venueFeeBps - fees.creatorFeeBps)) / totalBps;
-        bd.operatorFee = 0;
-        bd.totalFee = bd.protocolFee + bd.creatorFee + bd.venueNetFee;
-        bd.remainder = feeOut - bd.totalFee; // dust -> protocol in distributeFees
-    }
 
     /// @dev Implied per-share price of a fill expressed as a tick (price·1e18 / tickSize), best-effort
     ///      for off-chain stats only. DPM prices can exceed $1/share for late buyers; that is expected
