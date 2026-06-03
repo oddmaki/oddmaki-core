@@ -27,6 +27,8 @@ contract MockCTF {
     mapping(address => mapping(address => bool)) private _operatorApprovals;
     mapping(bytes32 => uint256[]) private _reportedPayouts;
     mapping(bytes32 => bool) public payoutsReported;
+    // conditionId => outcome index => payout numerator (mirrors the real CTF's public mapping).
+    mapping(bytes32 => mapping(uint256 => uint256)) private _payoutNumerators;
 
     // -------------------------------------------------------------------------
     // Condition management (mirrors real CTF)
@@ -150,9 +152,23 @@ contract MockCTF {
     // -------------------------------------------------------------------------
 
     /// @notice Mock reportPayouts - stores payouts for test verification.
+    /// @dev Also populates the conditionId-keyed numerator mapping the real CTF exposes, so code
+    ///      that reads payoutNumerators(conditionId, index) (e.g. DPM claim) works against the mock.
+    ///      The caller (msg.sender) is the oracle, and outcomeSlotCount == payouts.length, matching
+    ///      the conditionId computed at prepareCondition time.
     function reportPayouts(bytes32 questionId, uint256[] calldata payouts) external {
         _reportedPayouts[questionId] = payouts;
         payoutsReported[questionId] = true;
+
+        bytes32 conditionId = keccak256(abi.encodePacked(msg.sender, questionId, payouts.length));
+        for (uint256 i = 0; i < payouts.length; i++) {
+            _payoutNumerators[conditionId][i] = payouts[i];
+        }
+    }
+
+    /// @notice Real-CTF-compatible read: payout numerator for an outcome of a resolved condition.
+    function payoutNumerators(bytes32 conditionId, uint256 index) external view returns (uint256) {
+        return _payoutNumerators[conditionId][index];
     }
 
     /// @notice Helper to read reported payouts in tests.

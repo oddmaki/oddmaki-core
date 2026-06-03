@@ -8,6 +8,7 @@ import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibMatchingService} from "../services/LibMatchingService.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
+import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 
 /**
  * @title MatchingFacet
@@ -30,6 +31,7 @@ contract MatchingFacet is ReentrancyGuard {
         nonReentrant
         returns (uint256 fillCount)
     {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         if (!LibMarketTradingStorage.marketIsActive(marketId)) revert MarketNotActive();
         LibMarketTradingValidator.requireMarketNotPaused(marketId);
         LibVenueValidator.requireActiveVenueForMarket(marketId);

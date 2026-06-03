@@ -13,6 +13,7 @@ import {LibVaultPositionService} from "../services/LibVaultPositionService.sol";
 import {LibMarketContextService} from "../services/LibMarketContextService.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
+import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 
 /**
  * @title VaultFacet
@@ -49,6 +50,7 @@ contract VaultFacet is ReentrancyGuard {
      * @param amount   Amount of collateral (in collateral token decimals).
      */
     function splitPosition(uint256 marketId, uint256 amount) external nonReentrant {
+        LibDpmValidator.requireNotDpmMarket(marketId); // DPM markets hold no CTF outcome tokens
         LibVenueValidator.requireActiveVenueForMarket(marketId);
         LibMarketTradingValidator.requireMarketNotPaused(marketId);
 
@@ -70,6 +72,7 @@ contract VaultFacet is ReentrancyGuard {
      * @param amount   Amount of each outcome token to merge.
      */
     function mergePositions(uint256 marketId, uint256 amount) external nonReentrant {
+        LibDpmValidator.requireNotDpmMarket(marketId); // DPM markets hold no CTF outcome tokens
         (address collateralToken, bytes32 conditionId, uint256[2] memory positionIds) =
             LibMarketContextService.getMarketTradingContext(marketId);
 

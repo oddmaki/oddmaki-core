@@ -9,6 +9,7 @@ import {LibOrderExpiryService} from "../services/LibOrderExpiryService.sol";
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
+import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibOrderStorage} from "../storage/LibOrderStorage.sol";
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibMarketRegistryStorage} from "../storage/LibMarketRegistryStorage.sol";
@@ -45,6 +46,7 @@ contract LimitOrdersFacet is ReentrancyGuard {
         uint256 qty,
         uint256 expiry
     ) external nonReentrant returns (uint256 orderId) {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         if (!LibMarketTradingStorage.marketIsActive(marketId)) revert MarketNotActive();
         LibMarketTradingValidator.requireMarketNotPaused(marketId);
         LibVenueValidator.requireActiveVenueForMarket(marketId);
@@ -83,6 +85,7 @@ contract LimitOrdersFacet is ReentrancyGuard {
         nonReentrant
         returns (uint256 expiredCount, uint256 rewardEarned)
     {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         if (!LibMarketTradingStorage.marketIsActive(marketId)) revert MarketNotActive();
         expiredCount = LibOrderExpiryService.expireOrders(marketId, orderIds);
         rewardEarned = 0;

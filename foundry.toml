@@ -23,7 +23,8 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "openzeppelin-solidity/=lib/openzeppelin-solidity/",
     "@gnosis.pm/conditional-tokens-contracts/=lib/conditional-tokens-contracts/contracts/",
-    "@pythnetwork/pyth-sdk-solidity/=lib/pyth-sdk-solidity/"
+    "@pythnetwork/pyth-sdk-solidity/=lib/pyth-sdk-solidity/",
+    "@prb/math/=lib/prb-math/src/"
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

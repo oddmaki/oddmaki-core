@@ -9,6 +9,7 @@ import {LibMarketOrderValidator} from "../validators/LibMarketOrderValidator.sol
 import {LibAccessControlValidator} from "../validators/LibAccessControlValidator.sol";
 import {LibVenueValidator} from "../validators/LibVenueValidator.sol";
 import {LibMarketTradingValidator} from "../validators/LibMarketTradingValidator.sol";
+import {LibDpmValidator} from "../validators/LibDpmValidator.sol";
 import {LibMarketTradingStorage} from "../storage/LibMarketTradingStorage.sol";
 import {LibVaultCollateralService} from "../services/LibVaultCollateralService.sol";
 import {LibVaultOutcomeTokenService} from "../services/LibVaultOutcomeTokenService.sol";
@@ -71,6 +72,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
         uint256 slippageBps,
         MarketOrderType orderType
     ) external nonReentrant returns (MarketBuyResult memory result) {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         LibMarketOrderValidator.requireActiveMarket(marketId);
         LibMarketTradingValidator.requireMarketNotPaused(marketId);
         LibVenueValidator.requireActiveVenueForMarket(marketId);
@@ -129,6 +131,7 @@ contract MarketOrdersFacet is ReentrancyGuard {
         uint256 slippageBps,
         MarketOrderType orderType
     ) external nonReentrant returns (MarketSellResult memory result) {
+        LibDpmValidator.requireNotDpmMarket(marketId); // CLOB-only: DPM markets trade via DpmFacet
         LibMarketOrderValidator.requireActiveMarket(marketId);
         LibMarketTradingValidator.requireMarketNotPaused(marketId);
         LibVenueValidator.requireActiveVenueForMarket(marketId);
